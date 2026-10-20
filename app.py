@@ -32,26 +32,47 @@ FDAF_ASSETS = {
 
 headers = {"Authorization": f"Token {KOBO_TOKEN}"}
 
-# Function to fetch submissions for all forms
+# Function to fetch ALL submission records with Pagination Handling
 @st.cache_data(ttl=300)
 def fetch_all_fdaf_data():
     all_data = []
     form_summaries = {}
     
     for form_name, uid in FDAF_ASSETS.items():
-        url = f"https://{KOBO_SERVER}/api/v2/assets/{uid}/data.json"
-        try:
-            res = requests.get(url, headers=headers)
-            if res.status_code == 200:
-                records = res.json().get("results", [])
-                form_summaries[form_name] = len(records)
-                for rec in records:
-                    rec["_source_form"] = form_name
-                    all_data.append(rec)
-            else:
-                form_summaries[form_name] = "Error (401/404)"
-        except Exception as e:
-            form_summaries[form_name] = f"Failed: {e}"
+        # Loop through pages using Kobo's limit and start parameters
+        start = 0
+        limit = 1000  # Max records per page request
+        form_records = []
+        
+        while True:
+            url = f"https://{KOBO_SERVER}/api/v2/assets/{uid}/data.json?start={start}&limit={limit}"
+            try:
+                res = requests.get(url, headers=headers)
+                if res.status_code == 200:
+                    payload = res.json()
+                    results = payload.get("results", [])
+                    
+                    if not results:
+                        break
+                        
+                    for rec in results:
+                        rec["_source_form"] = form_name
+                        form_records.append(rec)
+                        
+                    # If we retrieved fewer items than the limit, we've reached the last page
+                    if len(results) < limit:
+                        break
+                        
+                    start += limit
+                else:
+                    st.warning(f"Failed to pull complete data for {form_name} (Status Code: {res.status_code})")
+                    break
+            except Exception as e:
+                st.error(f"Error fetching data for {form_name}: {e}")
+                break
+                
+        form_summaries[form_name] = len(form_records)
+        all_data.extend(form_records)
             
     return all_data, form_summaries
 
@@ -77,8 +98,6 @@ if raw_data:
     col_family = find_col(['family', 'household', 'hh_name', 'respondent', 'head_name'])
     col_age = find_col(['age', 'years_old'])
     col_edu = find_col(['education', 'grade', 'schooling', 'attainment'])
-    col_conf = find_col(['confid', 'certainty'])
-    col_qual = find_col(['qual', 'score', 'rate', 'evaluation'])
 
     # Standardize Metadata Columns
     df['Enumerator'] = df[col_enum] if col_enum else df.get('_submitted_by', 'Unknown Enumerator')
@@ -131,7 +150,6 @@ if raw_data:
                         "Category": "Field Discrepancy"
                     })
 
-        # Return clean placeholder if no anomalies found
         if not errors:
             return [{
                 "Question/Field": "N/A",
@@ -212,12 +230,18 @@ if raw_data:
     st.markdown("---")
 
     # -------------------------------------------------------------
-    # 1. ENUMERATOR SCORECARD: COMPLIANCE, QUALITY, INTEGRITY & CONFIDENCE
+    # FORM BREAKDOWN METRICS
+    # -------------------------------------------------------------
+    st.markdown("### 📋 Submission Volume per Form")
+    counts_df = pd.DataFrame(list(form_counts.items()), columns=["Form Name", "Total Submissions Extracted"])
+    st.dataframe(counts_df, use_container_width=True, hide_index=True)
+
+    st.markdown("---")
+
+    # -------------------------------------------------------------
+    # 1. ENUMERATOR QUALITY & COMPLIANCE SCORECARD
     # -------------------------------------------------------------
     st.markdown("### 🏆 1. Enumerator Quality & Compliance Scorecard")
-    st.caption("Comprehensive score disaggregated per enumerator based on total surveys, error severity distribution, and clean submission ratios.")
-
-    # Group by Enumerator to compute metrics
     enum_summary = audit_df.groupby(["Municipality", "Barangay", "Role", "Enumerator"]).agg(
         Total_Logs=('_id', 'nunique'),
         Critical_Count=('Severity', lambda x: (x == 'CRITICAL').sum()),
@@ -225,7 +249,6 @@ if raw_data:
         Minor_Count=('Severity', lambda x: (x == 'MINOR').sum())
     ).reset_index()
 
-    # Calculate Score Ratios
     enum_summary['Quality Score (%)'] = ((1 - ((enum_summary['Critical_Count']*2 + enum_summary['Major_Count']) / (enum_summary['Total_Logs']*2).replace(0, 1))) * 100).clip(0, 100).round(1)
     enum_summary['Compliance (%)'] = enum_summary['Quality Score (%)']
     enum_summary['Integrity (%)'] = enum_summary['Quality Score (%)']
@@ -244,11 +267,9 @@ if raw_data:
     st.markdown("---")
 
     # -------------------------------------------------------------
-    # 2. GRANULAR ERROR DISAGGREGATION LOG (SEVERITY, QUESTION, FAMILY, ENUMERATOR, LOCATION)
+    # 2. GRANULAR ERROR LOG
     # -------------------------------------------------------------
     st.markdown("### 🚨 2. Granular Error Log & Question-Level Discrepancies")
-    st.caption("Line-item audit pinpointing the exact question, family/respondent, enumerator, barangay, and error severity.")
-
     display_columns = [
         "Severity", "Category", "Question/Field", "Error Description", 
         "Family", "Enumerator", "Role", "Barangay", "Municipality", "_source_form", "_submission_time"
