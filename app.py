@@ -4,12 +4,12 @@ import requests
 
 # Page Configuration
 st.set_page_config(
-    page_title="BASELINE M&E DASHBOARD",
+    page_title="BASELINE M&E DASHBOARD - FDAF",
     page_icon="📊",
     layout="wide"
 )
 
-st.title("📊 BASELINE M&E DASHBOARD")
+st.title("📊 BASELINE M&E DASHBOARD (FDAF Project)")
 st.markdown("---")
 
 # Retrieve secrets
@@ -20,86 +20,59 @@ if not KOBO_TOKEN:
     st.error("🔑 KOBO_TOKEN is missing in Streamlit Secrets. Please check Settings -> Secrets.")
     st.stop()
 
-# Function to fetch assets / data from Kobo API
+# Define your specific FDAF Asset UIDs
+FDAF_ASSETS = {
+    "Form 1 (a5X3VN...)": "a5X3VNtbTEARd7d9L6nvpt",
+    "Form 2 (abG2xw...)": "abG2xw4Bv6Die7MZ6zZeM2",
+    "Form 3 (a9a2wr...)": "a9a2wrGWJ565rgTkA8FxTN",
+    "Form 4 (aoK7iX...)": "aoK7iXDNLmwbxPT2aiV9qq"
+}
+
+# Function to fetch submission data for specific assets
 @st.cache_data(ttl=300)
-def fetch_kobo_data():
+def fetch_fdaf_submissions(asset_uid):
     headers = {"Authorization": f"Token {KOBO_TOKEN}"}
-    assets_url = f"https://{KOBO_SERVER}/api/v2/assets.json"
+    url = f"https://{KOBO_SERVER}/api/v2/assets/{asset_uid}/data.json"
     
-    response = requests.get(assets_url, headers=headers)
-    if response.status_code != 200:
-        st.error(f"Error fetching data from Kobo (Status Code: {response.status_code})")
-        return None
-    
-    data = response.json()
-    return data.get("results", [])
+    response = requests.get(url, headers=headers)
+    if response.status_code == 200:
+        return response.json().get("results", [])
+    return []
 
-raw_data = fetch_kobo_data()
+# -------------------------------------------------------------
+# SIDEBAR: SELECTOR FOR FDAF FORMS
+# -------------------------------------------------------------
+st.sidebar.header("🔍 FDAF Form Selector")
+selected_form_name = st.sidebar.selectbox("Choose FDAF Form:", list(FDAF_ASSETS.keys()))
+selected_uid = FDAF_ASSETS[selected_form_name]
 
-if raw_data:
-    df = pd.DataFrame(raw_data)
+# Fetch data for selected form
+submissions = fetch_fdaf_submissions(selected_uid)
 
-    # -------------------------------------------------------------
-    # SIDEBAR: FILTERS AND SELECTORS
-    # -------------------------------------------------------------
-    st.sidebar.header("🔍 Data Filters")
-
-    # Filter 1: Project / Asset Name Selector
-    project_names = df["name"].dropna().unique().tolist() if "name" in df.columns else []
-    selected_projects = st.sidebar.multiselect(
-        "Select Project(s):",
-        options=project_names,
-        default=project_names
-    )
-
-    # Filter 2: Asset Type Filter
-    if "asset_type" in df.columns:
-        asset_types = df["asset_type"].dropna().unique().tolist()
-        selected_types = st.sidebar.multiselect(
-            "Select Asset Type:",
-            options=asset_types,
-            default=asset_types
-        )
-    else:
-        selected_types = None
-
-    # Filter 3: Search Query
-    search_query = st.sidebar.text_input("Search Projects/Forms:", "")
-
-    # Apply Filters to DataFrame
-    filtered_df = df.copy()
-
-    if selected_projects:
-        filtered_df = filtered_df[filtered_df["name"].isin(selected_projects)]
-
-    if selected_types and "asset_type" in filtered_df.columns:
-        filtered_df = filtered_df[filtered_df["asset_type"].isin(selected_types)]
-
-    if search_query:
-        filtered_df = filtered_df[
-            filtered_df["name"].astype(str).str.contains(search_query, case=False, na=False)
-        ]
-
-    # -------------------------------------------------------------
-    # DASHBOARD BODY
-    # -------------------------------------------------------------
-    st.sidebar.markdown("---")
-    st.sidebar.info(f"Showing **{len(filtered_df)}** of **{len(df)}** total items.")
+if submissions:
+    df = pd.DataFrame(submissions)
 
     # High-level Metrics
     col1, col2, col3 = st.columns(3)
-    col1.metric("Total Projects", len(df))
-    col2.metric("Filtered View", len(filtered_df))
+    col1.metric("Selected Form", selected_form_name)
+    col2.metric("Total Submissions", len(df))
     col3.metric("Active Server", KOBO_SERVER)
 
-    st.markdown("### 📋 Survey & Project Overview")
+    st.markdown(f"### 📋 Survey Submissions: {selected_form_name}")
 
-    # Display columns safely
-    display_cols = [col for col in ["name", "asset_type", "date_created", "date_modified", "submissions_count"] if col in filtered_df.columns]
-    if display_cols:
-        st.dataframe(filtered_df[display_cols], use_container_width=True)
+    # Optional Sidebar Search / Filter if data exists
+    search_term = st.sidebar.text_input("Search in Submissions:", "")
+    if search_term and not df.empty:
+        # Search across string columns
+        mask = df.astype(str).apply(lambda x: x.str.contains(search_term, case=False, na=False)).any(axis=1)
+        df_filtered = df[mask]
     else:
-        st.dataframe(filtered_df, use_container_width=True)
+        df_filtered = df
+
+    st.sidebar.info(f"Showing **{len(df_filtered)}** of **{len(df)}** records.")
+
+    # Display data table
+    st.dataframe(df_filtered, use_container_width=True)
 
 else:
-    st.warning("No data retrieved from KoboToolbox.")
+    st.info(f"No submission records found yet for **{selected_form_name}**, or the form is currently empty.")
