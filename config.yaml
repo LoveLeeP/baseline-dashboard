@@ -1,0 +1,28 @@
+cache_minutes: 10
+
+kobo:
+  server: "https://kf.kobotoolbox.org"
+  token: "1fff347c8d4f3006aa96f85aafc14ef15c9486bc"
+  monitoring_asset_uid: "aoK7iXDNLmwbxPT2aiV9qq"
+  projects:
+    - "a5X3VNtbTEARd7d9L6nvpt"
+    - "abG2xw4Bv6Die7MZ6zZeM2"
+    - "a9a2wrGWJ565rgTkA8FxTN"
+  page_size: 1000
+  timeout_seconds: 60
+
+reference:
+  fdaf_xlsform: "reference/FDAF_master.xlsx"
+  monitoring_xlsform: "reference/FDAF_Monitoring_form.xlsx"
+  directory: "reference/FDAF_Enumerator_Directory.xlsx"
+
+confidence:
+  weight_monitoring: 0.6
+  weight_integrity: 0.4
+  high_min: 90
+  medium_min: 75
+
+monitoring:
+  min_monitored_surveys: 2
+  critical_items: []
+  critical_ratings: ["no"]
