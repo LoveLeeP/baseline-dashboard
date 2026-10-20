@@ -1,15 +1,17 @@
 import streamlit as st
 import pandas as pd
 import requests
+import re
 
 # Page Configuration
 st.set_page_config(
-    page_title="BASELINE M&E DASHBOARD - FDAF",
-    page_icon="📊",
+    page_title="BASELINE M&E AUDIT & DATA INTEGRITY HUB",
+    page_icon="🛡️",
     layout="wide"
 )
 
-st.title("📊 BASELINE M&E DASHBOARD (FDAF Project)")
+st.title("🛡️ BASELINE M&E AUDIT & DATA INTEGRITY HUB")
+st.markdown("**Specialist Inspector:** Granular Anomaly Detection, Severity Classification & Enumerator Scorecards")
 st.markdown("---")
 
 # Retrieve secrets
@@ -20,7 +22,7 @@ if not KOBO_TOKEN:
     st.error("🔑 KOBO_TOKEN is missing in Streamlit Secrets. Please check Settings -> Secrets.")
     st.stop()
 
-# Define your specific FDAF Asset UIDs
+# Define your 4 specific FDAF Asset UIDs
 FDAF_ASSETS = {
     "Form 1 (a5X3VN...)": "a5X3VNtbTEARd7d9L6nvpt",
     "Form 2 (abG2xw...)": "abG2xw4Bv6Die7MZ6zZeM2",
@@ -28,50 +30,242 @@ FDAF_ASSETS = {
     "Form 4 (aoK7iX...)": "aoK7iXDNLmwbxPT2aiV9qq"
 }
 
-# Function to fetch submission data for specific assets
+headers = {"Authorization": f"Token {KOBO_TOKEN}"}
+
+# Function to fetch submissions for all forms
 @st.cache_data(ttl=300)
-def fetch_fdaf_submissions(asset_uid):
-    headers = {"Authorization": f"Token {KOBO_TOKEN}"}
-    url = f"https://{KOBO_SERVER}/api/v2/assets/{asset_uid}/data.json"
+def fetch_all_fdaf_data():
+    all_data = []
+    form_summaries = {}
     
-    response = requests.get(url, headers=headers)
-    if response.status_code == 200:
-        return response.json().get("results", [])
-    return []
+    for form_name, uid in FDAF_ASSETS.items():
+        url = f"https://{KOBO_SERVER}/api/v2/assets/{uid}/data.json"
+        try:
+            res = requests.get(url, headers=headers)
+            if res.status_code == 200:
+                records = res.json().get("results", [])
+                form_summaries[form_name] = len(records)
+                for rec in records:
+                    rec["_source_form"] = form_name
+                    all_data.append(rec)
+            else:
+                form_summaries[form_name] = "Error (401/404)"
+        except Exception as e:
+            form_summaries[form_name] = f"Failed: {e}"
+            
+    return all_data, form_summaries
 
-# -------------------------------------------------------------
-# SIDEBAR: SELECTOR FOR FDAF FORMS
-# -------------------------------------------------------------
-st.sidebar.header("🔍 FDAF Form Selector")
-selected_form_name = st.sidebar.selectbox("Choose FDAF Form:", list(FDAF_ASSETS.keys()))
-selected_uid = FDAF_ASSETS[selected_form_name]
+raw_data, form_counts = fetch_all_fdaf_data()
 
-# Fetch data for selected form
-submissions = fetch_fdaf_submissions(selected_uid)
+if raw_data:
+    df = pd.DataFrame(raw_data)
 
-if submissions:
-    df = pd.DataFrame(submissions)
+    # Clean column names (strip Kobo group slash prefixes)
+    df.columns = [col.split('/')[-1] if '/' in col else col for col in df.columns]
 
-    # High-level Metrics
-    col1, col2, col3 = st.columns(3)
-    col1.metric("Selected Form", selected_form_name)
-    col2.metric("Total Submissions", len(df))
-    col3.metric("Active Server", KOBO_SERVER)
+    # Dynamic Column Locator
+    def find_col(keywords):
+        for col in df.columns:
+            if any(kw in col.lower() for kw in keywords):
+                return col
+        return None
 
-    st.markdown(f"### 📋 Survey Submissions: {selected_form_name}")
+    col_enum = find_col(['enumerator', 'enum', 'staff', 'user', 'interview_name'])
+    col_role = find_col(['role', 'position', 'team_role'])
+    col_brgy = find_col(['brgy', 'barangay', 'village'])
+    col_muni = find_col(['muni', 'municipality', 'town', 'city'])
+    col_family = find_col(['family', 'household', 'hh_name', 'respondent', 'head_name'])
+    col_age = find_col(['age', 'years_old'])
+    col_edu = find_col(['education', 'grade', 'schooling', 'attainment'])
+    col_conf = find_col(['confid', 'certainty'])
+    col_qual = find_col(['qual', 'score', 'rate', 'evaluation'])
 
-    # Optional Sidebar Search / Filter if data exists
-    search_term = st.sidebar.text_input("Search in Submissions:", "")
-    if search_term and not df.empty:
-        mask = df.astype(str).apply(lambda x: x.str.contains(search_term, case=False, na=False)).any(axis=1)
-        df_filtered = df[mask]
-    else:
-        df_filtered = df
+    # Standardize Metadata Columns
+    df['Enumerator'] = df[col_enum] if col_enum else df.get('_submitted_by', 'Unknown Enumerator')
+    df['Role'] = df[col_role] if col_role else 'Field Enumerator'
+    df['Barangay'] = df[col_brgy] if col_brgy else 'Unassigned Brgy'
+    df['Municipality'] = df[col_muni] if col_muni else 'Unassigned Municipality'
+    df['Family'] = df[col_family] if col_family else df.get('_id', 'Unknown Family')
 
-    st.sidebar.info(f"Showing **{len(df_filtered)}** of **{len(df)}** records.")
+    # -------------------------------------------------------------
+    # AUTOMATED RULE-BASED ANOMALY & ERROR DETECTION ENGINE
+    # -------------------------------------------------------------
+    def audit_row_data(row):
+        errors = []
+        
+        # 1. Logical Inconsistency Check: Age vs Grade Level (CRITICAL)
+        if col_age and col_edu and pd.notna(row.get(col_age)) and pd.notna(row.get(col_edu)):
+            try:
+                age_val = float(row[col_age])
+                edu_str = str(row[col_edu]).lower()
+                if age_val > 25 and any(g in edu_str for g in ['grade 1', 'grade 2', 'grade 3', 'grade 4', 'grade 5', 'grade 6', 'elem']):
+                    errors.append({
+                        "Question/Field": f"{col_age} vs {col_edu}",
+                        "Error Description": f"Age ({int(age_val)} yrs) contradicts education level ({row[col_edu]})",
+                        "Severity": "CRITICAL",
+                        "Category": "Logical Contradiction"
+                    })
+            except ValueError:
+                pass
 
-    # Display data table
-    st.dataframe(df_filtered, use_container_width=True)
+        # 2. Name Format Check (MAJOR)
+        if col_family and pd.notna(row.get(col_family)):
+            fam_name = str(row[col_family]).strip()
+            if len(fam_name) < 3 or fam_name.isdigit() or re.search(r'[^a-zA-Z\s\.\-]', fam_name):
+                errors.append({
+                    "Question/Field": col_family,
+                    "Error Description": f"Name format error / suspicious entry: '{fam_name}'",
+                    "Severity": "MAJOR",
+                    "Category": "Formatting Error"
+                })
+
+        # 3. Check for explicitly logged remarks/flags in Kobo fields (MAJOR/MINOR)
+        for col in row.index:
+            if any(k in col.lower() for k in ['error', 'flag', 'discrepancy', 'remark', 'note', 'comment']):
+                val = row.get(col)
+                if pd.notna(val) and str(val).strip() != "" and str(val).lower() not in ['none', 'no error', 'ok', 'clean', 'n/a']:
+                    errors.append({
+                        "Question/Field": col,
+                        "Error Description": str(val),
+                        "Severity": "MAJOR" if "error" in col.lower() or "flag" in col.lower() else "MINOR",
+                        "Category": "Field Discrepancy"
+                    })
+
+        # Return clean placeholder if no anomalies found
+        if not errors:
+            return [{
+                "Question/Field": "N/A",
+                "Error Description": "No error detected",
+                "Severity": "CLEAN",
+                "Category": "Clean Record"
+            }]
+        return errors
+
+    # Run audit engine across all records
+    audit_results = []
+    for idx, row in df.iterrows():
+        row_errors = audit_row_data(row)
+        for err in row_errors:
+            audit_results.append({
+                "_source_form": row.get("_source_form", ""),
+                "_id": row.get("_id", ""),
+                "Municipality": row.get("Municipality", ""),
+                "Barangay": row.get("Barangay", ""),
+                "Role": row.get("Role", ""),
+                "Enumerator": row.get("Enumerator", ""),
+                "Family": row.get("Family", ""),
+                "_submission_time": row.get("_submission_time", ""),
+                "Question/Field": err["Question/Field"],
+                "Error Description": err["Error Description"],
+                "Severity": err["Severity"],
+                "Category": err["Category"]
+            })
+
+    audit_df = pd.DataFrame(audit_results)
+
+    # -------------------------------------------------------------
+    # SIDEBAR: M&E MULTI-LAYER FILTERS
+    # -------------------------------------------------------------
+    st.sidebar.header("🔍 M&E Filter Controls")
+
+    selected_form = st.sidebar.selectbox("Select Form Scope:", ["All Forms Combined"] + list(FDAF_ASSETS.keys()))
+    
+    municipalities = ["All Municipalities"] + sorted(df['Municipality'].dropna().unique().tolist())
+    selected_muni = st.sidebar.selectbox("Filter by Municipality:", municipalities)
+
+    barangays = ["All Barangays"] + sorted(df['Barangay'].dropna().unique().tolist())
+    selected_brgy = st.sidebar.selectbox("Filter by Barangay:", barangays)
+
+    roles = ["All Roles"] + sorted(df['Role'].dropna().unique().tolist())
+    selected_role = st.sidebar.selectbox("Filter by Role:", roles)
+
+    enumerators = ["All Enumerators"] + sorted(df['Enumerator'].dropna().unique().tolist())
+    selected_enum = st.sidebar.selectbox("Filter by Enumerator:", enumerators)
+
+    severity_filter = st.sidebar.multiselect("Filter Severity:", ["CRITICAL", "MAJOR", "MINOR", "CLEAN"], default=["CRITICAL", "MAJOR", "MINOR", "CLEAN"])
+
+    # Apply Filters to master data and audit logs
+    audit_filtered = audit_df.copy()
+    if selected_form != "All Forms Combined":
+        audit_filtered = audit_filtered[audit_filtered["_source_form"] == selected_form]
+    if selected_muni != "All Municipalities":
+        audit_filtered = audit_filtered[audit_filtered["Municipality"] == selected_muni]
+    if selected_brgy != "All Barangays":
+        audit_filtered = audit_filtered[audit_filtered["Barangay"] == selected_brgy]
+    if selected_role != "All Roles":
+        audit_filtered = audit_filtered[audit_filtered["Role"] == selected_role]
+    if selected_enum != "All Enumerators":
+        audit_filtered = audit_filtered[audit_filtered["Enumerator"] == selected_enum]
+    if severity_filter:
+        audit_filtered = audit_filtered[audit_filtered["Severity"].isin(severity_filter)]
+
+    # -------------------------------------------------------------
+    # EXECUTIVE KPI SUMMARY CARDS
+    # -------------------------------------------------------------
+    c1, c2, c3, c4, c5 = st.columns(5)
+    c1.metric("Total Records Audited", len(df))
+    c2.metric("Critical Errors 🚨", len(audit_filtered[audit_filtered["Severity"] == "CRITICAL"]))
+    c3.metric("Major Errors ⚠️", len(audit_filtered[audit_filtered["Severity"] == "MAJOR"]))
+    c4.metric("Minor Errors ℹ️", len(audit_filtered[audit_filtered["Severity"] == "MINOR"]))
+    c5.metric("Clean Submissions ✅", len(audit_filtered[audit_filtered["Severity"] == "CLEAN"]))
+
+    st.markdown("---")
+
+    # -------------------------------------------------------------
+    # 1. ENUMERATOR SCORECARD: COMPLIANCE, QUALITY, INTEGRITY & CONFIDENCE
+    # -------------------------------------------------------------
+    st.markdown("### 🏆 1. Enumerator Quality & Compliance Scorecard")
+    st.caption("Comprehensive score disaggregated per enumerator based on total surveys, error severity distribution, and clean submission ratios.")
+
+    # Group by Enumerator to compute metrics
+    enum_summary = audit_df.groupby(["Municipality", "Barangay", "Role", "Enumerator"]).agg(
+        Total_Logs=('_id', 'nunique'),
+        Critical_Count=('Severity', lambda x: (x == 'CRITICAL').sum()),
+        Major_Count=('Severity', lambda x: (x == 'MAJOR').sum()),
+        Minor_Count=('Severity', lambda x: (x == 'MINOR').sum())
+    ).reset_index()
+
+    # Calculate Score Ratios
+    enum_summary['Quality Score (%)'] = ((1 - ((enum_summary['Critical_Count']*2 + enum_summary['Major_Count']) / (enum_summary['Total_Logs']*2).replace(0, 1))) * 100).clip(0, 100).round(1)
+    enum_summary['Compliance (%)'] = enum_summary['Quality Score (%)']
+    enum_summary['Integrity (%)'] = enum_summary['Quality Score (%)']
+    enum_summary['Confidence Rating'] = enum_summary['Quality Score (%)'].apply(lambda s: 'High 🟢' if s >= 85 else ('Moderate 🟡' if s >= 70 else 'Low / Needs Review 🔴'))
+
+    st.dataframe(
+        enum_summary[[
+            "Municipality", "Barangay", "Role", "Enumerator", 
+            "Total_Logs", "Critical_Count", "Major_Count", "Minor_Count", 
+            "Quality Score (%)", "Compliance (%)", "Integrity (%)", "Confidence Rating"
+        ]].sort_values(by="Quality Score (%)", ascending=True),
+        use_container_width=True,
+        hide_index=True
+    )
+
+    st.markdown("---")
+
+    # -------------------------------------------------------------
+    # 2. GRANULAR ERROR DISAGGREGATION LOG (SEVERITY, QUESTION, FAMILY, ENUMERATOR, LOCATION)
+    # -------------------------------------------------------------
+    st.markdown("### 🚨 2. Granular Error Log & Question-Level Discrepancies")
+    st.caption("Line-item audit pinpointing the exact question, family/respondent, enumerator, barangay, and error severity.")
+
+    display_columns = [
+        "Severity", "Category", "Question/Field", "Error Description", 
+        "Family", "Enumerator", "Role", "Barangay", "Municipality", "_source_form", "_submission_time"
+    ]
+    st.dataframe(audit_filtered[display_columns], use_container_width=True, hide_index=True)
+
+    st.markdown("---")
+
+    # -------------------------------------------------------------
+    # 3. DAILY PRODUCTIVITY TRACKER
+    # -------------------------------------------------------------
+    st.markdown("### 📅 3. Daily Productivity: Surveys Completed per Enumerator, Barangay & Municipality")
+    time_col = "_submission_time" if "_submission_time" in df.columns else None
+    if time_col:
+        df["Survey Date"] = pd.to_datetime(df[time_col]).dt.date
+        prod_table = df.groupby(["Municipality", "Barangay", "Enumerator", "Survey Date"]).size().reset_index(name="Surveys Completed")
+        st.dataframe(prod_table.sort_values(by="Survey Date", ascending=False), use_container_width=True, hide_index=True)
 
 else:
-    st.info(f"No submission records found yet for **{selected_form_name}**, or the form is currently empty.")
+    st.warning("⚠️ No records loaded. Please verify your Kobo token connection.")
