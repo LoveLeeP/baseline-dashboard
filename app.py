@@ -4,12 +4,12 @@ import requests
 
 # Page Configuration
 st.set_page_config(
-    page_title="BASELINE M&E DASHBOARD",
+    page_title="BASELINE M&E DASHBOARD - FDAF",
     page_icon="📊",
     layout="wide"
 )
 
-st.title("📊 BASELINE M&E DASHBOARD")
+st.title("📊 BASELINE M&E DASHBOARD (FDAF Project)")
 st.markdown("---")
 
 # Retrieve secrets
@@ -20,86 +20,58 @@ if not KOBO_TOKEN:
     st.error("🔑 KOBO_TOKEN is missing in Streamlit Secrets. Please check Settings -> Secrets.")
     st.stop()
 
-headers = {"Authorization": f"Token {KOBO_TOKEN}"}
+# Define your specific FDAF Asset UIDs
+FDAF_ASSETS = {
+    "Form 1 (a5X3VN...)": "a5X3VNtbTEARd7d9L6nvpt",
+    "Form 2 (abG2xw...)": "abG2xw4Bv6Die7MZ6zZeM2",
+    "Form 3 (a9a2wr...)": "a9a2wrGWJ565rgTkA8FxTN",
+    "Form 4 (aoK7iX...)": "aoK7iXDNLmwbxPT2aiV9qq"
+}
 
-# Cache 1: Get list of active forms/assets
-@st.cache_data(ttl=180)
-def fetch_kobo_assets():
-    url = f"https://{KOBO_SERVER}/api/v2/assets/?asset_type=survey"
-    try:
-        res = requests.get(url, headers=headers)
-        if res.status_code == 200:
-            return res.json().get("results", [])
-        else:
-            st.error(f"Error fetching forms list (Status Code: {res.status_code})")
-            return []
-    except Exception as e:
-        st.error(f"Request failed: {e}")
-        return []
+# Function to fetch submission data for specific assets
+@st.cache_data(ttl=300)
+def fetch_fdaf_submissions(asset_uid):
+    headers = {"Authorization": f"Token {KOBO_TOKEN}"}
+    url = f"https://{KOBO_SERVER}/api/v2/assets/{asset_uid}/data.json"
+    
+    response = requests.get(url, headers=headers)
+    if response.status_code == 200:
+        return response.json().get("results", [])
+    return []
 
-# Cache 2: Fetch submission data for a given asset UID
-@st.cache_data(ttl=180)
-def fetch_asset_submissions(asset_uid):
-    url = f"https://{KOBO_SERVER}/api/v2/assets/{asset_uid}/data/?format=json"
-    try:
-        res = requests.get(url, headers=headers)
-        if res.status_code == 200:
-            return res.json().get("results", [])
-        else:
-            st.warning(f"Could not fetch submissions for form {asset_uid} (Status Code: {res.status_code})")
-            return []
-    except Exception as e:
-        st.error(f"Failed to load data for {asset_uid}: {e}")
-        return []
+# -------------------------------------------------------------
+# SIDEBAR: SELECTOR FOR FDAF FORMS
+# -------------------------------------------------------------
+st.sidebar.header("🔍 FDAF Form Selector")
+selected_form_name = st.sidebar.selectbox("Choose FDAF Form:", list(FDAF_ASSETS.keys()))
+selected_uid = FDAF_ASSETS[selected_form_name]
 
-# Load all available forms
-forms = fetch_kobo_assets()
+# Fetch data for selected form
+submissions = fetch_fdaf_submissions(selected_uid)
 
-if forms:
-    # Build dictionary mapping Form Name -> UID
-    form_map = {f.get("name", "Unnamed Form"): f.get("uid") for f in forms if f.get("uid")}
+if submissions:
+    df = pd.DataFrame(submissions)
 
-    # -------------------------------------------------------------
-    # SIDEBAR: SELECTOR FOR ACTIVE FORM
-    # -------------------------------------------------------------
-    st.sidebar.header("🔍 Form Selection & Filters")
-    selected_form_name = st.sidebar.selectbox("Select Survey Form:", list(form_map.keys()))
-    selected_uid = form_map[selected_form_name]
+    # High-level Metrics
+    col1, col2, col3 = st.columns(3)
+    col1.metric("Selected Form", selected_form_name)
+    col2.metric("Total Submissions", len(df))
+    col3.metric("Active Server", KOBO_SERVER)
 
-    # Fetch submission data for selected form
-    raw_submissions = fetch_asset_submissions(selected_uid)
+    st.markdown(f"### 📋 Survey Submissions: {selected_form_name}")
 
-    if raw_submissions:
-        # Convert list of submission records to DataFrame
-        df = pd.DataFrame(raw_submissions)
-
-        # Clean column names (strip Kobo slash prefixes like 'group/question')
-        df.columns = [col.split('/')[-1] if '/' in col else col for col in df.columns]
-
-        # Top Metric Cards
-        st.markdown(f"### 📋 Form: {selected_form_name}")
-        c1, c2, c3 = st.columns(3)
-        c1.metric("Total Submissions", len(df))
-        c2.metric("Total Fields", len(df.columns))
-        c3.metric("Server", KOBO_SERVER)
-
-        st.markdown("---")
-
-        # Sidebar Search Bar
-        search_query = st.sidebar.text_input("Search Submissions:")
-        if search_query:
-            mask = df.astype(str).apply(lambda row: row.str.contains(search_query, case=False, na=False)).any(axis=1)
-            df_display = df[mask]
-        else:
-            df_display = df
-
-        st.sidebar.info(f"Showing **{len(df_display)}** of **{len(df)}** records.")
-
-        # Display Data Table
-        st.dataframe(df_display, use_container_width=True)
-
+    # Optional Sidebar Search / Filter if data exists
+    search_term = st.sidebar.text_input("Search in Submissions:", "")
+    if search_term and not df.empty:
+        mask = df.astype(str).apply(lambda x: x.str.contains(search_term, case=False, na=False)).any(axis=1)
+        df_filtered = df[mask]
     else:
-        st.info(f"No submission records found for **{selected_form_name}**.")
+        df_filtered = df
+
+    st.sidebar.info(f"Showing **{len(df_filtered)}** of **{len(df)}** records.")
+
+    # Display data table
+    st.dataframe(df_filtered, use_container_width=True)
 
 else:
-    st.warning("No survey forms found under this Kobo account token.")
+    st.info(f"No submission records found yet for **{selected_form_name}**, or the form is currently empty.")
