@@ -4,12 +4,13 @@ import requests
 
 # Page Configuration
 st.set_page_config(
-    page_title="BASELINE M&E DASHBOARD - FDAF",
-    page_icon="📊",
+    page_title="BASELINE M&E AUDIT & COMPLIANCE DASHBOARD",
+    page_icon="🛡️",
     layout="wide"
 )
 
-st.title("📊 BASELINE M&E DASHBOARD (FDAF Project - Quality & Error Tracking)")
+st.title("🛡️ BASELINE M&E AUDIT & COMPLIANCE HUB")
+st.markdown("**Executive M&E Inspector:** Data Integrity, Enumerator Productivity & Question-Level Error Disaggregation")
 st.markdown("---")
 
 # Retrieve secrets
@@ -53,119 +54,132 @@ def fetch_all_fdaf_data():
             
     return all_data, form_summaries
 
-# Load data
 raw_data, form_counts = fetch_all_fdaf_data()
 
-# -------------------------------------------------------------
-# SIDEBAR: CONTROLS & FILTERS
-# -------------------------------------------------------------
-st.sidebar.header("🔍 M&E Filter Controls")
-selected_form_filter = st.sidebar.selectbox(
-    "Filter by Form:",
-    ["All Forms Combined"] + list(FDAF_ASSETS.keys())
-)
-
-search_query = st.sidebar.text_input("Search Records:", "")
-
-# -------------------------------------------------------------
-# MAIN DASHBOARD
-# -------------------------------------------------------------
 if raw_data:
     df = pd.DataFrame(raw_data)
 
     # Clean column names (strip group slashes)
     df.columns = [col.split('/')[-1] if '/' in col else col for col in df.columns]
 
-    # Filter by form if selected
-    if selected_form_filter != "All Forms Combined":
-        df_filtered = df[df["_source_form"] == selected_form_filter].copy()
-    else:
-        df_filtered = df.copy()
+    # Standardize or locate key auditing columns
+    # We look for common naming patterns for Enumerator, Role, Barangay, Municipality, and Family
+    def find_col(keywords):
+        for col in df.columns:
+            if any(kw in col.lower() for kw in keywords):
+                return col
+        return None
 
-    # Apply search filter if entered
-    if search_query:
-        mask = df_filtered.astype(str).apply(lambda x: x.str.contains(search_query, case=False, na=False)).any(axis=1)
-        df_filtered = df_filtered[mask]
+    col_enum = find_col(['enumerator', 'enum', 'staff', 'user', 'interview_name'])
+    col_role = find_col(['role', 'position', 'team_role'])
+    col_brgy = find_col(['brgy', 'barangay', 'village'])
+    col_muni = find_col(['muni', 'municipality', 'town', 'city'])
+    col_family = find_col(['family', 'household', 'hh_name', 'respondent', 'head'])
+    col_error = find_col(['error', 'flag', 'issue', 'discrepancy', 'remark', 'comment'])
 
-    # Top KPI Row
-    col1, col2, col3, col4 = st.columns(4)
-    col1.metric("Total Submissions", len(df))
-    col2.metric("Filtered View Count", len(df_filtered))
-    col3.metric("Active Forms", len(FDAF_ASSETS))
-    col4.metric("Server Status", "Connected 🟢")
+    # Fallback placeholders if specific columns aren't named standardly yet
+    if not col_enum: df['Enumerator'] = df.get('_submitted_by', 'Unknown Enumerator')
+    else: df['Enumerator'] = df[col_enum]
 
-    st.markdown("### 📋 Form Breakdown & Submission Volume")
-    counts_df = pd.DataFrame(list(form_counts.items()), columns=["Form Name", "Total Submissions"])
-    st.dataframe(counts_df, use_container_width=True, hide_index=True)
+    if not col_role: df['Role'] = 'Field Enumerator'
+    else: df['Role'] = df[col_role]
+
+    if not col_brgy: df['Barangay'] = 'Unassigned Brgy'
+    else: df['Barangay'] = df[col_brgy]
+
+    if not col_muni: df['Municipality'] = 'Unassigned Municipality'
+    else: df['Municipality'] = df[col_muni]
+
+    if not col_family: df['Family'] = df.get('_id', 'Unknown Family')
+    else: df['Family'] = df[col_family]
+
+    # -------------------------------------------------------------
+    # SIDEBAR: M&E MULTI-LAYER FILTERS
+    # -------------------------------------------------------------
+    st.sidebar.header("🔍 M&E Geographic & Personnel Filters")
+
+    # Filter 1: Project / Form
+    selected_form = st.sidebar.selectbox("Select Form Scope:", ["All Forms Combined"] + list(FDAF_ASSETS.keys()))
+
+    # Filter 2: Municipality
+    municipalities = ["All Municipalities"] + sorted(df['Municipality'].dropna().unique().tolist())
+    selected_muni = st.sidebar.selectbox("Filter by Municipality:", municipalities)
+
+    # Filter 3: Barangay
+    barangays = ["All Barangays"] + sorted(df['Barangay'].dropna().unique().tolist())
+    selected_brgy = st.sidebar.selectbox("Filter by Barangay:", barangays)
+
+    # Filter 4: Role
+    roles = ["All Roles"] + sorted(df['Role'].dropna().unique().tolist())
+    selected_role = st.sidebar.selectbox("Filter by Role:", roles)
+
+    # Filter 5: Enumerator Name
+    enumerators = ["All Enumerators"] + sorted(df['Enumerator'].dropna().unique().tolist())
+    selected_enum = st.sidebar.selectbox("Filter by Enumerator:", enumerators)
+
+    # Apply Filters
+    df_filtered = df.copy()
+    if selected_form != "All Forms Combined":
+        df_filtered = df_filtered[df_filtered["_source_form"] == selected_form]
+    if selected_muni != "All Municipalities":
+        df_filtered = df_filtered[df_filtered["Municipality"] == selected_muni]
+    if selected_brgy != "All Barangays":
+        df_filtered = df_filtered[df_filtered["Barangay"] == selected_brgy]
+    if selected_role != "All Roles":
+        df_filtered = df_filtered[df_filtered["Role"] == selected_role]
+    if selected_enum != "All Enumerators":
+        df_filtered = df_filtered[df_filtered["Enumerator"] == selected_enum]
+
+    # -------------------------------------------------------------
+    # M&E EXECUTIVE METRIC SUMMARY
+    # -------------------------------------------------------------
+    c1, c2, c3, c4, c5 = st.columns(5)
+    c1.metric("Total Surveys Logged", len(df_filtered))
+    c2.metric("Active Enumerators", df_filtered['Enumerator'].nunique())
+    c3.metric("Municipalities Covered", df_filtered['Municipality'].nunique())
+    c4.metric("Barangays Covered", df_filtered['Barangay'].nunique())
+    c5.metric("Data Audit Status", "Active 🟢")
 
     st.markdown("---")
 
     # -------------------------------------------------------------
-    # CONFIDENCE & QUALITY INDICATORS
+    # 1. ENUMERATOR PRODUCTIVITY: DAILY SURVEYS PER ENUMERATOR, BRGY, MUNI
     # -------------------------------------------------------------
-    st.markdown("### 🎯 Confidence, Quality & Integrity Metrics")
-    indicator_keywords = ['confid', 'qual', 'integ', 'score', 'rate', 'valid', 'compliance']
-    indicator_cols = [c for c in df_filtered.columns if any(kw in c.lower() for kw in indicator_keywords)]
+    st.markdown("### 📊 1. Enumerator Daily Productivity & Volume Tracking")
     
-    if indicator_cols:
-        ind_col1, ind_col2 = st.columns(2)
-        with ind_col1:
-            st.info(f"Detected Indicators: **{', '.join(indicator_cols)}**")
-        primary_ind = indicator_cols[0]
-        with ind_col2:
-            st.write(f"**Breakdown for: `{primary_ind}`**")
-            value_counts = df_filtered[primary_ind].value_counts().reset_index()
-            value_counts.columns = [primary_ind, "Count"]
-            st.dataframe(value_counts, hide_index=True, use_container_width=True)
-    else:
-        st.info("💡 Ensure survey forms include questions with keywords like 'confidence', 'quality', or 'score' to populate metrics here.")
-
-    st.markdown("---")
-
-    # -------------------------------------------------------------
-    # SPECIFIC ERRORS PER FAMILY DISAGGREGATED PER ENUMERATOR
-    # -------------------------------------------------------------
-    st.markdown("### 🚨 Error Disaggregation: Errors per Family by Enumerator")
-    
-    # Identify potential enumerator columns and family/respondent identification columns
-    enum_cols = [c for c in df_filtered.columns if any(k in c.lower() for k in ['enumerator', 'enum', 'user', 'staff', 'submitted_by'])]
-    family_cols = [c for c in df_filtered.columns if any(k in c.lower() for k in ['family', 'household', 'name', 'respondent', 'hh_id'])]
-    error_cols = [c for c in df_filtered.columns if any(k in c.lower() for k in ['error', 'discrepancy', 'issue', 'flag', 'comment', 'note', 'remark'])]
-
-    if enum_cols and family_cols:
-        primary_enum = enum_cols[0]
-        primary_family = family_cols[0]
-        primary_error = error_cols[0] if error_cols else df_filtered.columns[0] # Fallback
-        
-        st.caption(using tracking fields: Enumerator=`{primary_enum}`, Family=`{primary_family}`, Error/Note=`{primary_error}`)
-        
-        # Group and pivot data
-        error_summary = df_filtered[[primary_enum, primary_family, primary_error, "_source_form"]].dropna(subset=[primary_enum])
-        st.dataframe(error_summary, use_container_width=True, hide_index=True)
-    else:
-        st.info("💡 To view granular error breakdowns by family and enumerator, ensure your Kobo forms contain identifier fields for enumerators (e.g., `enumerator_name`), families (e.g., `family_name`), and errors/remarks (e.g., `error_notes`).")
-
-    st.markdown("---")
-
-    # Daily Submission Trend
-    st.markdown("### 📅 Daily Submission Activity")
     time_col = "_submission_time" if "_submission_time" in df_filtered.columns else None
     if time_col:
-        try:
-            df_filtered["date"] = pd.to_datetime(df_filtered[time_col]).dt.date
-            daily_counts = df_filtered.groupby("date").size().reset_index(name="count")
-            st.bar_chart(daily_counts.set_index("date"))
-        except Exception:
-            st.info("Submission timestamps could not be parsed into a daily chart.")
+        df_filtered["Survey Date"] = pd.to_datetime(df_filtered[time_col]).dt.date
+        
+        # Aggregate productivity table
+        prod_table = df_filtered.groupby(["Municipality", "Barangay", "Enumerator", "Survey Date"]).size().reset_index(name="Surveys Completed")
+        st.dataframe(prod_table.sort_values(by="Survey Date", ascending=False), use_container_width=True, hide_index=True)
     else:
-        st.info("No submission timestamp field found for daily aggregation.")
+        st.info("Submission timestamp metadata is missing for daily trend graphing.")
+
+    st.markdown("---")
 
     # -------------------------------------------------------------
-    # AUDIT LOG & COMPLIANCE TABLE
+    # 2. DATA INTEGRITY & QUESTION-LEVEL ERROR DISAGGREGATION
     # -------------------------------------------------------------
-    st.markdown("### 🛡️ Audit Log & Metadata Compliance")
-    audit_cols = [c for c in ["_source_form", "_id", "_submission_time", "_submitted_by", "_validation_status"] if c in df_filtered.columns]
-    st.dataframe(df_filtered[audit_cols] if audit_cols else df_filtered, use_container_width=True)
+    st.markdown("### 🚨 2. Question-Level Error & Discrepancy Disaggregation")
+    st.caption("Detailed breakdown mapping errors, anomalies, or flagged entries per family, enumerator, barangay, and municipality.")
+
+    # Build structured compliance audit view
+    audit_display_cols = [
+        "_source_form", "Municipality", "Barangay", "Enumerator", "Role", "Family", 
+        col_error if col_error else "_id", 
+        "_submission_time", "_validation_status"
+    ]
+    # Keep only columns that actually exist in df_filtered
+    audit_display_cols = [c for c in audit_display_cols if c in df_filtered.columns]
+
+    st.dataframe(df_filtered[audit_display_cols], use_container_width=True, hide_index=True)
+
+    # Summary pivot: Errors/Flags per Enumerator & Barangay
+    st.markdown("### 📋 Audit Summary: Submissions by Enumerator & Location")
+    summary_pivot = df_filtered.groupby(["Municipality", "Barangay", "Enumerator"]).size().reset_index(name="Total Submissions")
+    st.dataframe(summary_pivot, use_container_width=True, hide_index=True)
 
 else:
-    st.warning("⚠️ No submission records found across the 4 FDAF forms yet.")
+    st.warning("⚠️ No records loaded. Please verify Kobo token connection.")
