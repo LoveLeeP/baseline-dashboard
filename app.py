@@ -11,7 +11,7 @@ st.set_page_config(
 )
 
 st.title("🛡️ BASELINE M&E AUDIT & COMPLIANCE HUB")
-st.markdown("**Executive M&E Inspector:** Quality Scoring, Daily Productivity & Granular Error Audit Log")
+st.markdown("**Specialist Inspector Console:** Quality Scoring, Daily Productivity & Granular Error Audit Log")
 st.markdown("---")
 
 # Retrieve secrets
