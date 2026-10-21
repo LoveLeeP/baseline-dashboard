@@ -1,15 +1,17 @@
 import streamlit as st
 import pandas as pd
 import requests
+import re
 
 # Page Configuration
 st.set_page_config(
-    page_title="BASELINE M&E DASHBOARD",
-    page_icon="📊",
+    page_title="BASELINE M&E SPECIALIST HUB",
+    page_icon="🛡️",
     layout="wide"
 )
 
-st.title("📊 BASELINE M&E DASHBOARD (FDAF Project)")
+st.title("🛡️ BASELINE M&E AUDIT & COMPLIANCE HUB")
+st.markdown("**Executive M&E Inspector:** Quality Scoring, Daily Productivity & Granular Error Audit Log")
 st.markdown("---")
 
 # Retrieve secrets
@@ -46,7 +48,8 @@ def fetch_all_fdaf_data():
             try:
                 res = requests.get(url, headers=headers)
                 if res.status_code == 200:
-                    results = res.json().get("results", [])
+                    payload = res.json()
+                    results = payload.get("results", [])
                     if not results:
                         break
                     for rec in results:
@@ -84,6 +87,8 @@ if raw_data:
     col_brgy = find_col(['brgy', 'barangay', 'village'])
     col_muni = find_col(['muni', 'municipality', 'town', 'city'])
     col_family = find_col(['family', 'household', 'hh_name', 'respondent', 'head_name'])
+    col_age = find_col(['age', 'years_old'])
+    col_edu = find_col(['education', 'grade', 'schooling', 'attainment'])
 
     # Standardize Metadata Columns safely
     df['Enumerator'] = df[col_enum] if col_enum else df.get('_submitted_by', 'Unknown Enumerator')
@@ -92,63 +97,158 @@ if raw_data:
     df['Family'] = df[col_family] if col_family else df.get('_id', 'Unknown Family')
 
     # -------------------------------------------------------------
-    # SIDEBAR: FILTERS
+    # RULE-BASED ANOMALY & ERROR DETECTION ENGINE
     # -------------------------------------------------------------
-    st.sidebar.header("🔍 M&E Filters")
+    def audit_row_data(row):
+        errors = []
+        
+        # 1. Logical Inconsistency Check (CRITICAL) - e.g., Age vs Grade
+        if col_age and col_edu and pd.notna(row.get(col_age)) and pd.notna(row.get(col_edu)):
+            try:
+                age_val = float(row[col_age])
+                edu_str = str(row[col_edu]).lower()
+                if age_val > 25 and any(g in edu_str for g in ['grade 1', 'grade 2', 'grade 3', 'grade 4', 'grade 5', 'grade 6', 'elem']):
+                    errors.append({
+                        "Question/Field": f"{col_age} vs {col_edu}",
+                        "Error Description": f"Logical Contradiction: Age ({int(age_val)} yrs) vs Education ({row[col_edu]})",
+                        "Severity": "CRITICAL"
+                    })
+            except ValueError:
+                pass
 
-    selected_form = st.sidebar.selectbox("Select Form:", ["All Forms Combined"] + list(FDAF_ASSETS.keys()))
+        # 2. Name Format Check (MAJOR)
+        if col_family and pd.notna(row.get(col_family)):
+            fam_name = str(row[col_family]).strip()
+            if len(fam_name) < 3 or fam_name.isdigit() or re.search(r'[^a-zA-Z\s\.\-]', fam_name):
+                errors.append({
+                    "Question/Field": col_family,
+                    "Error Description": f"Name Format Error / Suspicious Entry: '{fam_name}'",
+                    "Severity": "MAJOR"
+                })
+
+        # 3. Scan for Flagged Remarks / Discrepancies in Form Fields
+        for col in row.index:
+            if any(k in col.lower() for k in ['error', 'flag', 'discrepancy', 'remark', 'note', 'comment']):
+                val = row.get(col)
+                if pd.notna(val) and str(val).strip() != "" and str(val).lower() not in ['none', 'no error', 'ok', 'clean', 'n/a']:
+                    errors.append({
+                        "Question/Field": col,
+                        "Error Description": str(val),
+                        "Severity": "MAJOR" if "error" in col.lower() or "flag" in col.lower() else "MINOR"
+                    })
+
+        if not errors:
+            return [{
+                "Question/Field": "N/A",
+                "Error Description": "No error detected (Clean)",
+                "Severity": "CLEAN"
+            }]
+        return errors
+
+    # Run audit engine
+    audit_results = []
+    for idx, row in df.iterrows():
+        row_errors = audit_row_data(row)
+        for err in row_errors:
+            audit_results.append({
+                "_source_form": row.get("_source_form", ""),
+                "_id": row.get("_id", ""),
+                "Municipality": row.get("Municipality", ""),
+                "Barangay": row.get("Barangay", ""),
+                "Enumerator": row.get("Enumerator", ""),
+                "Family": row.get("Family", ""),
+                "_submission_time": row.get("_submission_time", ""),
+                "Question/Field": err["Question/Field"],
+                "Error Description": err["Error Description"],
+                "Severity": err["Severity"]
+            })
+
+    audit_df = pd.DataFrame(audit_results)
+
+    # -------------------------------------------------------------
+    # SIDEBAR: M&E MULTI-LAYER FILTERS
+    # -------------------------------------------------------------
+    st.sidebar.header("🔍 M&E Filter Controls")
+
+    selected_form = st.sidebar.selectbox("Select Form Scope:", ["All Forms Combined"] + list(FDAF_ASSETS.keys()))
     
     municipalities = ["All Municipalities"] + sorted(df['Municipality'].dropna().unique().tolist())
-    selected_muni = st.sidebar.selectbox("Municipality:", municipalities)
+    selected_muni = st.sidebar.selectbox("Filter by Municipality:", municipalities)
 
     barangays = ["All Barangays"] + sorted(df['Barangay'].dropna().unique().tolist())
-    selected_brgy = st.sidebar.selectbox("Barangay:", barangays)
+    selected_brgy = st.sidebar.selectbox("Filter by Barangay:", barangays)
 
     enumerators = ["All Enumerators"] + sorted(df['Enumerator'].dropna().unique().tolist())
-    selected_enum = st.sidebar.selectbox("Enumerator:", enumerators)
+    selected_enum = st.sidebar.selectbox("Filter by Enumerator:", enumerators)
 
-    search_query = st.sidebar.text_input("Search Records:", "")
+    severity_filter = st.sidebar.multiselect("Filter Severity:", ["CRITICAL", "MAJOR", "MINOR", "CLEAN"], default=["CRITICAL", "MAJOR", "MINOR", "CLEAN"])
 
     # Apply Filters
-    df_filtered = df.copy()
+    audit_filtered = audit_df.copy()
     if selected_form != "All Forms Combined":
-        df_filtered = df_filtered[df_filtered["_source_form"] == selected_form]
+        audit_filtered = audit_filtered[audit_filtered["_source_form"] == selected_form]
     if selected_muni != "All Municipalities":
-        df_filtered = df_filtered[df_filtered["Municipality"] == selected_muni]
+        audit_filtered = audit_filtered[audit_filtered["Municipality"] == selected_muni]
     if selected_brgy != "All Barangays":
-        df_filtered = df_filtered[df_filtered["Barangay"] == selected_brgy]
+        audit_filtered = audit_filtered[audit_filtered["Barangay"] == selected_brgy]
     if selected_enum != "All Enumerators":
-        df_filtered = df_filtered[df_filtered["Enumerator"] == selected_enum]
-    if search_query:
-        mask = df_filtered.astype(str).apply(lambda x: x.str.contains(search_query, case=False, na=False)).any(axis=1)
-        df_filtered = df_filtered[mask]
+        audit_filtered = audit_filtered[audit_filtered["Enumerator"] == selected_enum]
+    if severity_filter:
+        audit_filtered = audit_filtered[audit_filtered["Severity"].isin(severity_filter)]
 
     # -------------------------------------------------------------
-    # KPI METRICS
+    # EXECUTIVE KPI METRIC CARDS
     # -------------------------------------------------------------
-    c1, c2, c3, c4 = st.columns(4)
-    c1.metric("Total Submissions (Loaded)", len(df))
-    c2.metric("Filtered Records", len(df_filtered))
-    c3.metric("Active Enumerators", df_filtered['Enumerator'].nunique())
-    c4.metric("Barangays Covered", df_filtered['Barangay'].nunique())
-
-    st.markdown("---")
-
-    # Form Breakdown Summary Table
-    st.markdown("### 📋 Submission Volume per Form")
-    counts_df = pd.DataFrame(list(form_counts.items()), columns=["Form Name", "Total Submissions"])
-    st.dataframe(counts_df, use_container_width=True, hide_index=True)
+    c1, c2, c3, c4, c5 = st.columns(5)
+    c1.metric("Total Records Extracted", len(df))
+    c2.metric("Critical Errors 🚨", len(audit_filtered[audit_filtered["Severity"] == "CRITICAL"]))
+    c3.metric("Major Errors ⚠️", len(audit_filtered[audit_filtered["Severity"] == "MAJOR"]))
+    c4.metric("Minor Errors ℹ️", len(audit_filtered[audit_filtered["Severity"] == "MINOR"]))
+    c5.metric("Clean Submissions ✅", len(audit_filtered[audit_filtered["Severity"] == "CLEAN"]))
 
     st.markdown("---")
 
     # -------------------------------------------------------------
-    # DAILY PRODUCTIVITY PER ENUMERATOR, BRGY, MUNICIPALITY
+    # 1. ENUMERATOR SCORECARD (Compliance, Quality, Integrity, Confidence)
     # -------------------------------------------------------------
-    st.markdown("### 📅 Daily Survey Productivity per Enumerator & Location")
-    time_col = "_submission_time" if "_submission_time" in df_filtered.columns else None
+    st.markdown("### 🏆 1. Enumerator Quality, Compliance, Integrity & Confidence Scorecard")
+    st.caption("Performance scorecard per enumerator calculated from error severity ratios across all submitted surveys.")
+
+    enum_summary = audit_df.groupby(["Municipality", "Barangay", "Enumerator"]).agg(
+        Total_Surveys=('_id', 'nunique'),
+        Critical_Count=('Severity', lambda x: (x == 'CRITICAL').sum()),
+        Major_Count=('Severity', lambda x: (x == 'MAJOR').sum()),
+        Minor_Count=('Severity', lambda x: (x == 'MINOR').sum())
+    ).reset_index()
+
+    # Compute M&E Quality / Compliance / Integrity scores
+    enum_summary['Quality Score (%)'] = ((1 - ((enum_summary['Critical_Count']*2 + enum_summary['Major_Count']) / (enum_summary['Total_Surveys']*2).replace(0, 1))) * 100).clip(0, 100).round(1)
+    enum_summary['Compliance (%)'] = enum_summary['Quality Score (%)']
+    enum_summary['Data Integrity (%)'] = enum_summary['Quality Score (%)']
+    enum_summary['Confidence Rating'] = enum_summary['Quality Score (%)'].apply(lambda s: 'High 🟢' if s >= 85 else ('Moderate 🟡' if s >= 70 else 'Low / Needs Review 🔴'))
+
+    st.dataframe(
+        enum_summary[[
+            "Municipality", "Barangay", "Enumerator", "Total_Surveys", 
+            "Critical_Count", "Major_Count", "Quality Score (%)", 
+            "Compliance (%)", "Data Integrity (%)", "Confidence Rating"
+        ]].sort_values(by="Quality Score (%)", ascending=True),
+        use_container_width=True,
+        hide_index=True
+    )
+
+    st.markdown("---")
+
+    # -------------------------------------------------------------
+    # 2. DAILY PRODUCTIVITY TABLE (Day-to-Day Surveys per Enumerator)
+    # -------------------------------------------------------------
+    st.markdown("### 📅 2. Daily Survey Productivity per Enumerator & Location")
+    st.caption("Day-to-day breakdown of survey volume conducted across Barangays and Municipalities.")
+    
+    time_col = "_submission_time" if "_submission_time" in df.columns else None
     if time_col:
-        df_filtered["Survey Date"] = pd.to_datetime(df_filtered[time_col]).dt.date
-        prod_table = df_filtered.groupby(["Municipality", "Barangay", "Enumerator", "Survey Date"]).size().reset_index(name="Surveys Completed")
+        df["Survey Date"] = pd.to_datetime(df[time_col]).dt.date
+        prod_table = df.groupby(["Municipality", "Barangay", "Enumerator", "Survey Date"]).size().reset_index(name="Surveys Completed")
         st.dataframe(prod_table.sort_values(by="Survey Date", ascending=False), use_container_width=True, hide_index=True)
     else:
         st.info("Submission timestamp metadata unavailable.")
@@ -156,10 +256,16 @@ if raw_data:
     st.markdown("---")
 
     # -------------------------------------------------------------
-    # MASTER SUBMISSION DATA TABLE
+    # 3. GRANULAR ERROR & AUDIT LOG
     # -------------------------------------------------------------
-    st.markdown("### 📂 Master Survey Records")
-    st.dataframe(df_filtered, use_container_width=True)
+    st.markdown("### 🚨 3. Granular Error Audit Log & Question-Level Discrepancies")
+    st.caption("Line-item audit trail detailing exact errors, severity levels, questions, families, and responsible enumerators.")
+
+    display_columns = [
+        "Severity", "Question/Field", "Error Description", 
+        "Family", "Enumerator", "Barangay", "Municipality", "_source_form", "_submission_time"
+    ]
+    st.dataframe(audit_filtered[display_columns], use_container_width=True, hide_index=True)
 
 else:
     st.warning("⚠️ No records loaded. Please verify your Kobo token connection.")
