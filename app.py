@@ -63,7 +63,6 @@ if raw_data:
     df.columns = [col.split('/')[-1] if '/' in col else col for col in df.columns]
 
     # Standardize or locate key auditing columns
-    # We look for common naming patterns for Enumerator, Role, Barangay, Municipality, and Family
     def find_col(keywords):
         for col in df.columns:
             if any(kw in col.lower() for kw in keywords):
