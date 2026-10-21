@@ -11,7 +11,7 @@ st.set_page_config(
 )
 
 st.title("🛡️ BASELINE M&E AUDIT & COMPLIANCE HUB")
-st.markdown("**Specialist Inspector Console:** Quality Scoring, Daily Productivity & Granular Error Audit Log")
+st.markdown("**Executive M&E Inspector:** Quality Scoring, Daily Productivity & Granular Error Audit Log")
 st.markdown("---")
 
 # Retrieve secrets
@@ -84,7 +84,6 @@ if raw_data:
         return None
 
     col_enum = find_col(['enumerator', 'enum', 'staff', 'user', 'interview_name'])
-    col_role = find_col(['role', 'position', 'team_role'])
     col_brgy = find_col(['brgy', 'barangay', 'village'])
     col_muni = find_col(['muni', 'municipality', 'town', 'city'])
     col_family = find_col(['family', 'household', 'hh_name', 'respondent', 'head_name'])
@@ -93,7 +92,6 @@ if raw_data:
 
     # Standardize Metadata Columns safely
     df['Enumerator'] = df[col_enum] if col_enum else df.get('_submitted_by', 'Unknown Enumerator')
-    df['Role'] = df[col_role] if col_role else 'Field Enumerator'
     df['Barangay'] = df[col_brgy] if col_brgy else 'Unassigned Brgy'
     df['Municipality'] = df[col_muni] if col_muni else 'Unassigned Municipality'
     df['Family'] = df[col_family] if col_family else df.get('_id', 'Unknown Family')
@@ -104,7 +102,7 @@ if raw_data:
     def audit_row_data(row):
         errors = []
         
-        # 1. Logical Inconsistency Check: Age vs Grade Level (CRITICAL)
+        # 1. Logical Inconsistency Check (CRITICAL) - e.g., Age vs Grade
         if col_age and col_edu and pd.notna(row.get(col_age)) and pd.notna(row.get(col_edu)):
             try:
                 age_val = float(row[col_age])
@@ -112,7 +110,7 @@ if raw_data:
                 if age_val > 25 and any(g in edu_str for g in ['grade 1', 'grade 2', 'grade 3', 'grade 4', 'grade 5', 'grade 6', 'elem']):
                     errors.append({
                         "Question/Field": f"{col_age} vs {col_edu}",
-                        "Error Description": f"Logical Contradiction: Age ({int(age_val)} yrs) is unlikely to be in {row[col_edu]}",
+                        "Error Description": f"Logical Contradiction: Age ({int(age_val)} yrs) vs Education ({row[col_edu]})",
                         "Severity": "CRITICAL"
                     })
             except ValueError:
@@ -124,7 +122,7 @@ if raw_data:
             if len(fam_name) < 3 or fam_name.isdigit() or re.search(r'[^a-zA-Z\s\.\-]', fam_name):
                 errors.append({
                     "Question/Field": col_family,
-                    "Error Description": f"Name Format Error: Name is not in proper format ('{fam_name}')",
+                    "Error Description": f"Name Format Error / Suspicious Entry: '{fam_name}'",
                     "Severity": "MAJOR"
                 })
 
@@ -135,7 +133,7 @@ if raw_data:
                 if pd.notna(val) and str(val).strip() != "" and str(val).lower() not in ['none', 'no error', 'ok', 'clean', 'n/a']:
                     errors.append({
                         "Question/Field": col,
-                        "Error Description": f"Field Flag/Remark: {str(val)}",
+                        "Error Description": str(val),
                         "Severity": "MAJOR" if "error" in col.lower() or "flag" in col.lower() else "MINOR"
                     })
 
@@ -147,7 +145,7 @@ if raw_data:
             }]
         return errors
 
-    # Run audit engine across all records
+    # Run audit engine
     audit_results = []
     for idx, row in df.iterrows():
         row_errors = audit_row_data(row)
@@ -157,7 +155,6 @@ if raw_data:
                 "_id": row.get("_id", ""),
                 "Municipality": row.get("Municipality", ""),
                 "Barangay": row.get("Barangay", ""),
-                "Role": row.get("Role", ""),
                 "Enumerator": row.get("Enumerator", ""),
                 "Family": row.get("Family", ""),
                 "_submission_time": row.get("_submission_time", ""),
@@ -169,7 +166,7 @@ if raw_data:
     audit_df = pd.DataFrame(audit_results)
 
     # -------------------------------------------------------------
-    # CLEAN TABBED LAYOUT
+    # CLEAN TABBED LAYOUT (No Sidebar Filters)
     # -------------------------------------------------------------
     tab1, tab2, tab3, tab4 = st.tabs([
         "📊 Executive Summary", 
@@ -196,7 +193,7 @@ if raw_data:
         st.markdown("### 🏆 Enumerator Quality, Compliance, Integrity & Confidence Scorecard")
         st.caption("Performance metrics per enumerator calculated from error severity ratios across all submitted surveys.")
 
-        enum_summary = audit_df.groupby(["Municipality", "Barangay", "Role", "Enumerator"]).agg(
+        enum_summary = audit_df.groupby(["Municipality", "Barangay", "Enumerator"]).agg(
             Total_Surveys=('_id', 'nunique'),
             Critical_Count=('Severity', lambda x: (x == 'CRITICAL').sum()),
             Major_Count=('Severity', lambda x: (x == 'MAJOR').sum()),
@@ -210,7 +207,7 @@ if raw_data:
 
         st.dataframe(
             enum_summary[[
-                "Municipality", "Barangay", "Role", "Enumerator", "Total_Surveys", 
+                "Municipality", "Barangay", "Enumerator", "Total_Surveys", 
                 "Critical_Count", "Major_Count", "Quality Score (%)", 
                 "Compliance (%)", "Data Integrity (%)", "Confidence Rating"
             ]].sort_values(by="Quality Score (%)", ascending=True),
@@ -236,7 +233,7 @@ if raw_data:
 
         display_columns = [
             "Severity", "Question/Field", "Error Description", 
-            "Family", "Enumerator", "Role", "Barangay", "Municipality", "_source_form", "_submission_time"
+            "Family", "Enumerator", "Barangay", "Municipality", "_source_form", "_submission_time"
         ]
         st.dataframe(audit_df[display_columns], use_container_width=True, hide_index=True)
 
