@@ -12,7 +12,7 @@ st.set_page_config(
 )
 
 st.title("🛡️ BASELINE M&E INSPECTOR & DATA QUALITY HUB")
-st.markdown("**Executive Console:** Roster Integrity, Odd-Hour & Duration Audits, GPS Overlaps, Duplicate IDs & Confidence %")
+st.markdown("**Executive Console:** Straight-lining, Skip Logic, Household Outliers, Odd-Hours, GPS Overlaps & Confidence %")
 st.markdown("---")
 
 # Retrieve secrets
@@ -93,13 +93,18 @@ if raw_data:
     col_start = find_col(['start', 'start_time', 'interview_start', 'submission_start'])
     col_end = find_col(['end', 'end_time', 'interview_end', 'submission_end'])
     
-    # Specific fields for rigorous logical checking
+    # Specific fields for logical and structural checking
     col_age = find_col(['age', 'years_old'])
     col_edu = find_col(['education', 'grade', 'schooling', 'attainment'])
     col_status = find_col(['status', 'enrollment', 'currently_studying', 'school'])
     col_gender = find_col(['gender', 'sex'])
     col_pregnant = find_col(['pregnant', 'pregnancy', 'lactating'])
     col_son_age = find_col(['son_age', 'child_age', 'dependents_age'])
+    col_hh_size = find_col(['hh_size', 'household_size', 'total_members', 'members_count'])
+    col_housing = find_col(['housing', 'house_type', 'dwelling', 'structure'])
+    col_income = find_col(['income', 'earnings', 'livelihood_income', 'monthly_income'])
+    col_assets = find_col(['assets', 'appliances', 'properties', 'car_ownership'])
+    col_school_kids = find_col(['school_aged_children', 'has_children_school', 'children_count'])
 
     # Standardize Metadata Columns safely
     df['Enumerator'] = df[col_enum] if col_enum else df.get('_submitted_by', 'Unknown Enumerator')
@@ -109,11 +114,10 @@ if raw_data:
     df['Family'] = df[col_family] if col_family else df.get('_id', 'Unknown Family')
     df['Location_Key'] = df[col_loc] if col_loc else df['Barangay']
 
-    # Pre-calculate Location/GPS Overlaps
+    # Pre-calculate Location/GPS Overlaps & Duplicate Household IDs
     loc_counts = df['Location_Key'].value_counts().to_dict()
     df['Shared_Location_Count'] = df['Location_Key'].map(loc_counts)
 
-    # Pre-calculate Duplicate Household IDs
     family_counts = df['Family'].value_counts().to_dict()
     df['Duplicate_Family_Count'] = df['Family'].map(family_counts)
     
@@ -128,7 +132,7 @@ if raw_data:
         df["Submission Hour"] = 12
 
     # -------------------------------------------------------------
-    # ADVANCED COMPREHENSIVE M&E AUDIT ENGINE
+    # ELITE COMPREHENSIVE M&E AUDIT ENGINE (ALL 5 ADVANCED CHECKS)
     # -------------------------------------------------------------
     def audit_row_data(row):
         errors = []
@@ -154,16 +158,16 @@ if raw_data:
             except Exception:
                 pass
 
-        # 2. Odd-Hour Submission Audit (Late Night Back-filling detection)
+        # 2. Odd-Hour Submission Audit (Check #2)
         sub_hour = row.get("Submission Hour", 12)
-        if pd.notna(sub_hour) and (sub_hour >= 22 or sub_hour <= 4): # Between 10 PM and 4 AM
+        if pd.notna(sub_hour) and (sub_hour >= 22 or sub_hour <= 4):
             errors.append({
                 "Question/Field": "Submission Timestamp",
-                "Error Description": f"Odd-Hour Submission ({sub_hour}:00 hrs - Potential late-night back-filling)",
+                "Error Description": f"Odd-Hour Submission ({sub_hour}:00 hrs - Late-night back-filling)",
                 "Severity": "CRITICAL"
             })
 
-        # 3. GPS / Location Overlap Check (Pencil-whipping detection)
+        # 3. GPS / Location Overlap Check
         loc_val = row.get('Location_Key')
         overlap_num = row.get('Shared_Location_Count', 1)
         if overlap_num > 1 and pd.notna(loc_val):
@@ -173,7 +177,7 @@ if raw_data:
                 "Severity": "MAJOR"
             })
 
-        # 4. Duplicate Household ID Check
+        # 4. Duplicate Household ID Check (Check #5)
         dup_count = row.get('Duplicate_Family_Count', 1)
         fam_id = row.get('Family', 'Unknown')
         if dup_count > 1 and fam_id != 'Unknown Family':
@@ -183,7 +187,49 @@ if raw_data:
                 "Severity": "CRITICAL"
             })
 
-        # 5. Name Format Validation Rule
+        # 5. Straight-lining / Monotonous Grid Detection (Check #1)
+        # Evaluates if multiple numeric/scale columns in the row share the exact same repeated value
+        try:
+            scale_vals = [val for key, val in row.items() if any(k in str(key).lower() for k in ['score', 'rating', 'scale', 'freq', 'coping']) and pd.notna(val)]
+            if len(scale_vals) >= 5:
+                if len(set(scale_vals)) == 1:
+                    errors.append({
+                        "Question/Field": "Rating / Matrix Grid",
+                        "Error Description": f"Straight-lining Detected (Identical answers ticked straight down {len(scale_vals)} grid items)",
+                        "Severity": "MAJOR"
+                    })
+        except Exception:
+            pass
+
+        # 6. Household Size vs. Housing / Economic Outlier Check (Check #3)
+        if col_hh_size and col_housing and pd.notna(row.get(col_hh_size)) and pd.notna(row.get(col_housing)):
+            try:
+                hh_size_val = float(row[col_hh_size])
+                housing_str = str(row[col_housing]).lower()
+                if hh_size_val >= 12 and any(h in housing_str for h in ['makeshift', 'tent', 'light materials', 'shanty', 'barong-barong']):
+                    errors.append({
+                        "Question/Field": f"Household Size ({col_hh_size}) vs Housing ({col_housing})",
+                        "Error Description": f"Economic Outlier: Large household ({int(hh_size_val)} members) living in makeshift/light-material structure",
+                        "Severity": "MAJOR"
+                    })
+            except ValueError:
+                pass
+
+        # 7. Conditional Skip Logic Failure Check (Check #4)
+        if col_school_kids and col_edu and pd.notna(row.get(col_school_kids)):
+            try:
+                has_kids = str(row[col_school_kids]).lower()
+                edu_val = row.get(col_edu)
+                if any(no in has_kids for no in ['no', 'none', '0', 'false']) and pd.notna(edu_val) and str(edu_val).strip() != "":
+                    errors.append({
+                        "Question/Field": "Skip Logic: School Children vs Education Module",
+                        "Error Description": "Skip Logic Failure: Education module filled out despite reporting zero school-aged children",
+                        "Severity": "CRITICAL"
+                    })
+            except Exception:
+                pass
+
+        # 8. Name Format Validation Rule
         if col_family and pd.notna(row.get(col_family)):
             fam_str = str(row[col_family]).strip()
             if len(fam_str) < 2 or fam_str.isdigit() or re.search(r'[^a-zA-Z\s\.\-]', fam_str):
@@ -193,9 +239,7 @@ if raw_data:
                     "Severity": "MAJOR"
                 })
 
-        # 6. HOUSEHOLD & CROSS-QUESTION LOGIC CONSISTENCY CHECKS
-        
-        # Check A: Head Age vs. Elementary Grade & Studying Status
+        # 9. HOUSEHOLD & CROSS-QUESTION LOGIC CONSISTENCY CHECKS
         if col_age and col_edu and col_status and pd.notna(row.get(col_age)) and pd.notna(row.get(col_edu)) and pd.notna(row.get(col_status)):
             try:
                 age_val = float(row[col_age])
@@ -211,7 +255,6 @@ if raw_data:
             except ValueError:
                 pass
 
-        # Check B: Impossible Parent-Child Age Gap
         if col_age and col_son_age and pd.notna(row.get(col_age)) and pd.notna(row.get(col_son_age)):
             try:
                 parent_age = float(row[col_age])
@@ -227,7 +270,6 @@ if raw_data:
             except ValueError:
                 pass
 
-        # Check C: Biological Gender vs. Pregnancy Condition
         if col_gender and col_pregnant and pd.notna(row.get(col_gender)) and pd.notna(row.get(col_pregnant)):
             try:
                 gender_str = str(row[col_gender]).lower()
@@ -322,8 +364,8 @@ if raw_data:
         st.dataframe(q_summary.sort_values(by="Compliance Score (%)", ascending=True), use_container_width=True, hide_index=True)
 
     with tab_integrity:
-        st.markdown("### 🔍 Data Integrity (Household & Cross-Question Consistency)")
-        st.caption("Expand any flagged survey to inspect exact household logic contradictions, odd-hour submissions, and GPS overlaps.")
+        st.markdown("### 🔍 Data Integrity (Comprehensive Quality Checks)")
+        st.caption("Expand any flagged survey to inspect exact straight-lining, skip logic failures, economic outliers, and roster errors.")
 
         flagged_rows = filtered_audit_df[filtered_audit_df["Level of Error"] != "CLEAN"]
         if not flagged_rows.empty:
@@ -336,7 +378,7 @@ if raw_data:
                     col_y.write(f"**Survey Date:** {row['Survey Date']}")
                     st.error(f"**Error Description:** {row['Error Description (Brief)']}")
         else:
-            st.success("✅ No household or cross-section logic issues found within the selected filters!")
+            st.success("✅ No data integrity issues found within the selected filters!")
 
     with tab_audit:
         st.markdown("### 📋 Master Audit Log")
