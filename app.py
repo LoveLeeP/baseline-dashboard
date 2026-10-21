@@ -1,18 +1,17 @@
 import streamlit as st
 import pandas as pd
 import requests
-import re
 from datetime import datetime
 
 # Page Configuration
 st.set_page_config(
-    page_title="M&E Executive Coaching & Quality Console",
+    page_title="M&E Master Quality Audit Hub",
     page_icon="🛡️",
     layout="wide"
 )
 
-st.title("🛡️ M&E EXECUTIVE COACHING & QUALITY CONSOLE")
-st.markdown("**Real-Time Field Command Center:** Daily Productivity, Enumerator Error Rates & Complete Family Error Dossiers")
+st.title("🛡️ M&E MASTER QUALITY AUDIT HUB")
+st.markdown("**Direct Action Console:** Single-view error tracking for rapid field coaching.")
 st.markdown("---")
 
 # Retrieve secrets
@@ -25,10 +24,10 @@ if not KOBO_TOKEN:
 
 # Define your 4 specific FDAF Asset UIDs
 FDAF_ASSETS = {
-    "Form 1 (a5X3VN...)": "a5X3VNtbTEARd7d9L6nvpt",
-    "Form 2 (abG2xw...)": "abG2xw4Bv6Die7MZ6zZeM2",
-    "Form 3 (a9a2wr...)": "a9a2wrGWJ565rgTkA8FxTN",
-    "Form 4 (aoK7iX...)": "aoK7iXDNLmwbxPT2aiV9qq"
+    "Form 1": "a5X3VNtbTEARd7d9L6nvpt",
+    "Form 2": "abG2xw4Bv6Die7MZ6zZeM2",
+    "Form 3": "a9a2wrGWJ565rgTkA8FxTN",
+    "Form 4": "aoK7iXDNLmwbxPT2aiV9qq"
 }
 
 headers = {"Authorization": f"Token {KOBO_TOKEN}"}
@@ -37,13 +36,9 @@ headers = {"Authorization": f"Token {KOBO_TOKEN}"}
 @st.cache_data(ttl=300)
 def fetch_all_fdaf_data():
     all_data = []
-    form_summaries = {}
-    
     for form_name, uid in FDAF_ASSETS.items():
         start = 0
         limit = 1000
-        form_records = []
-        
         while True:
             url = f"https://{KOBO_SERVER}/api/v2/assets/{uid}/data.json?start={start}&limit={limit}"
             try:
@@ -55,7 +50,7 @@ def fetch_all_fdaf_data():
                         break
                     for rec in results:
                         rec["_source_form"] = form_name
-                        form_records.append(rec)
+                        all_data.append(rec)
                     if len(results) < limit:
                         break
                     start += limit
@@ -63,13 +58,9 @@ def fetch_all_fdaf_data():
                     break
             except Exception:
                 break
-                
-        form_summaries[form_name] = len(form_records)
-        all_data.extend(form_records)
-            
-    return all_data, form_summaries
+    return all_data
 
-raw_data, form_counts = fetch_all_fdaf_data()
+raw_data = fetch_all_fdaf_data()
 
 if raw_data:
     df = pd.DataFrame(raw_data)
@@ -77,7 +68,7 @@ if raw_data:
     # Clean column names (strip Kobo group slash prefixes)
     df.columns = [col.split('/')[-1] if '/' in col else col for col in df.columns]
 
-    # Dynamic Column Locator for M&E Metadata
+    # Flexible Column Finder
     def find_col(keywords):
         for col in df.columns:
             if any(kw in col.lower() for kw in keywords):
@@ -87,38 +78,25 @@ if raw_data:
     col_enum = find_col(['enumerator', 'enum', 'staff', 'user', 'interview_name'])
     col_brgy = find_col(['brgy', 'barangay', 'village'])
     col_muni = find_col(['muni', 'municipality', 'town', 'city'])
-    col_family = find_col(['family', 'household', 'hh_name', 'respondent', 'head_name'])
+    col_family = find_col(['family', 'household', 'hh_name', 'respondent', 'head_name', 'name'])
     col_loc = find_col(['location', 'gps', 'geo', 'coordinates', 'lat', 'long'])
-    col_start = find_col(['start', 'start_time', 'interview_start', 'submission_start'])
-    col_end = find_col(['end', 'end_time', 'interview_end', 'submission_end'])
-    
-    # Specific fields for logical checking
-    col_age = find_col(['age', 'years_old'])
-    col_edu = find_col(['education', 'grade', 'schooling', 'attainment'])
-    col_status = find_col(['status', 'enrollment', 'currently_studying', 'school'])
-    col_gender = find_col(['gender', 'sex'])
-    col_pregnant = find_col(['pregnant', 'pregnancy', 'lactating'])
-    col_son_age = find_col(['son_age', 'child_age', 'dependents_age'])
-    col_hh_size = find_col(['hh_size', 'household_size', 'total_members'])
-    col_housing = find_col(['housing', 'house_type', 'dwelling'])
-    col_school_kids = find_col(['school_aged_children', 'has_children_school'])
+    col_start = find_col(['start', 'start_time', 'submission_start'])
+    col_end = find_col(['end', 'end_time', 'submission_end'])
 
-    # Standardize Metadata Columns safely
+    # Standardize Metadata Columns Safely
     df['Enumerator'] = df[col_enum] if col_enum else df.get('_submitted_by', 'Unknown Enumerator')
     df['Barangay'] = df[col_brgy] if col_brgy else 'Unassigned Brgy'
     df['Municipality'] = df[col_muni] if col_muni else 'Unassigned Municipality'
-    df['Family'] = df[col_family] if col_family else df.get('_id', 'Unknown Family')
+    df['Family / HH ID'] = df[col_family] if col_family else df.get('_id', 'Unknown ID')
     df['Location_Key'] = df[col_loc] if col_loc else df['Barangay']
 
-    loc_counts = df['Location_Key'].value_counts().to_dict()
-    df['Shared_Location_Count'] = df['Location_Key'].map(loc_counts)
+    # Duplicate and Overlap metrics
+    df['Shared_Location_Count'] = df['Location_Key'].map(df['Location_Key'].value_counts().to_dict())
+    df['Duplicate_HH_Count'] = df['Family / HH ID'].map(df['Family / HH ID'].value_counts().to_dict())
 
-    family_counts = df['Family'].value_counts().to_dict()
-    df['Duplicate_Family_Count'] = df['Family'].map(family_counts)
-    
-    time_col = "_submission_time" if "_submission_time" in df.columns else None
-    if time_col:
-        df['Parsed_Timestamp'] = pd.to_datetime(df[time_col], errors='coerce')
+    # Timestamp handling
+    if "_submission_time" in df.columns:
+        df['Parsed_Timestamp'] = pd.to_datetime(df["_submission_time"], errors='coerce')
         df["Survey Date"] = df['Parsed_Timestamp'].dt.date
         df["Submission Hour"] = df['Parsed_Timestamp'].dt.hour
     else:
@@ -126,210 +104,108 @@ if raw_data:
         df["Submission Hour"] = 12
 
     # -------------------------------------------------------------
-    # M&E AUDIT ENGINE
+    # COMPREHENSIVE QUALITY AUDIT ENGINE
     # -------------------------------------------------------------
-    def audit_row_data(row):
+    audit_results = []
+
+    for idx, row in df.iterrows():
         errors = []
         
-        # 1. Duration Check
+        # 1. Check Duration / Speeding
         if col_start and col_end and pd.notna(row.get(col_start)) and pd.notna(row.get(col_end)):
             try:
-                start_dt = pd.to_datetime(row[col_start])
-                end_dt = pd.to_datetime(row[col_end])
-                duration_mins = (end_dt - start_dt).total_seconds() / 60.0
-                if duration_mins < 3.0:
-                    errors.append({
-                        "Question/Field": "Interview Duration",
-                        "Error Description": f"Rushed Survey ({round(duration_mins, 1)} mins)",
-                        "Severity": "MAJOR"
-                    })
+                s_dt = pd.to_datetime(row[col_start])
+                e_dt = pd.to_datetime(row[col_end])
+                mins = (e_dt - s_dt).total_seconds() / 60.0
+                if mins < 3.0:
+                    errors.append(f"Rushed Survey (Completed in {round(mins, 1)} mins)")
+                elif mins < 0:
+                    errors.append("Timestamp Error (End time precedes start time)")
             except Exception:
                 pass
 
-        # 2. Odd-Hour Submission
-        sub_hour = row.get("Submission Hour", 12)
-        if pd.notna(sub_hour) and (sub_hour >= 22 or sub_hour <= 4):
-            errors.append({
-                "Question/Field": "Submission Timestamp",
-                "Error Description": f"Odd-Hour Submission ({sub_hour}:00 hrs)",
-                "Severity": "CRITICAL"
-            })
+        # 2. Odd-Hour Submission Check
+        hour = row.get("Submission Hour", 12)
+        if pd.notna(hour) and (hour >= 22 or hour <= 4):
+            errors.append(f"Odd-Hour Submission ({hour}:00 hrs - Late night)")
 
-        # 3. GPS Overlap
+        # 3. GPS Overlap Check
         if row.get('Shared_Location_Count', 1) > 1:
-            errors.append({
-                "Question/Field": "GPS Location",
-                "Error Description": "GPS Overlap / Shared Coordinates with another submission",
-                "Severity": "MAJOR"
-            })
+            errors.append(f"GPS Overlap (Shared coordinates with {row.get('Shared_Location_Count') - 1} other forms)")
 
-        # 4. Duplicate Family ID
-        if row.get('Duplicate_Family_Count', 1) > 1:
-            errors.append({
-                "Question/Field": "Household ID",
-                "Error Description": "Duplicate Household ID detected",
-                "Severity": "CRITICAL"
-            })
+        # 4. Duplicate Household ID Check
+        if row.get('Duplicate_HH_Count', 1) > 1:
+            errors.append("Duplicate Household ID (Same ID submitted multiple times)")
 
-        # 5. Skip Logic Failure
-        if col_school_kids and col_edu and pd.notna(row.get(col_school_kids)):
-            try:
-                has_kids = str(row[col_school_kids]).lower()
-                edu_val = row.get(col_edu)
-                if any(no in has_kids for no in ['no', 'none', '0']) and pd.notna(edu_val) and str(edu_val).strip() != "":
-                    errors.append({
-                        "Question/Field": "Skip Logic: Education Module",
-                        "Error Description": "Education module filled out despite reporting zero school-aged children",
-                        "Severity": "CRITICAL"
-                    })
-            except Exception:
-                pass
+        # 5. General Missing Data Check (Scans all columns for blanks)
+        blank_cols = [c for c in df.columns if pd.isna(row.get(c)) and not c.startswith('_')]
+        if len(blank_cols) > 5:
+            errors.append(f"High Incompleteness ({len(blank_cols)} blank fields detected)")
 
-        # 6. Cross-Question Logic (Age vs Education)
-        if col_age and col_edu and col_status and pd.notna(row.get(col_age)) and pd.notna(row.get(col_edu)):
-            try:
-                age_val = float(row[col_age])
-                edu_str = str(row[col_edu]).lower()
-                if age_val >= 25 and any(g in edu_str for g in ['grade 1', 'grade 2', 'elementary']):
-                    errors.append({
-                        "Question/Field": "Age vs Education",
-                        "Error Description": f"Adult Age ({int(age_val)}) conflicts with elementary schooling",
-                        "Severity": "CRITICAL"
-                    })
-            except ValueError:
-                pass
-
-        if not errors:
-            return [{"Question/Field": "N/A", "Error Description": "Clean record", "Severity": "CLEAN"}]
-        return errors
-
-    audit_results = []
-    for idx, row in df.iterrows():
-        row_errors = audit_row_data(row)
-        for err in row_errors:
-            audit_results.append({
-                "Survey Date": row.get("Survey Date", ""),
-                "Municipality": row.get("Municipality", ""),
-                "Barangay": row.get("Barangay", ""),
-                "Enumerator": row.get("Enumerator", ""),
-                "Family / HH ID": row.get("Family", ""),
-                "Level of Error": err["Severity"],
-                "Error Description (Brief)": err["Error Description"],
-                "Question/Field": err["Question/Field"],
-                "_source_form": row.get("_source_form", "")
-            })
+        # If errors found, log them
+        if errors:
+            for err in errors:
+                audit_results.append({
+                    "Survey Date": row.get("Survey Date", ""),
+                    "Form": row.get("_source_form", ""),
+                    "Municipality": row.get("Municipality", ""),
+                    "Barangay": row.get("Barangay", ""),
+                    "Enumerator": row.get("Enumerator", ""),
+                    "HH ID": row.get("Family / HH ID", ""),
+                    "Error Description": err
+                })
 
     audit_df = pd.DataFrame(audit_results)
 
     # -------------------------------------------------------------
-    # SIDEBAR: GLOBAL FILTERS
+    # STREAMLIT UI: CLEAN MASTER TABLE
     # -------------------------------------------------------------
-    st.sidebar.header("🔍 Filter Field Data")
-    selected_muni = st.sidebar.selectbox("Filter Municipality:", ["All Municipalities"] + sorted(df['Municipality'].dropna().unique().tolist()))
-    selected_brgy = st.sidebar.selectbox("Filter Barangay:", ["All Barangays"] + sorted(df['Barangay'].dropna().unique().tolist()))
-    selected_enum = st.sidebar.selectbox("Filter Enumerator:", ["All Enumerators"] + sorted(df['Enumerator'].dropna().unique().tolist()))
-
-    filtered_audit_df = audit_df.copy()
-    filtered_raw_df = df.copy()
-
-    if selected_muni != "All Municipalities":
-        filtered_audit_df = filtered_audit_df[filtered_audit_df["Municipality"] == selected_muni]
-        filtered_raw_df = filtered_raw_df[filtered_raw_df["Municipality"] == selected_muni]
-    if selected_brgy != "All Barangays":
-        filtered_audit_df = filtered_audit_df[filtered_audit_df["Barangay"] == selected_brgy]
-        filtered_raw_df = filtered_raw_df[filtered_raw_df["Barangay"] == selected_brgy]
-    if selected_enum != "All Enumerators":
-        filtered_audit_df = filtered_audit_df[filtered_audit_df["Enumerator"] == selected_enum]
-        filtered_raw_df = filtered_raw_df[filtered_raw_df["Enumerator"] == selected_enum]
-
-    # -------------------------------------------------------------
-    # TOP EXECUTIVE METRICS BAR
-    # -------------------------------------------------------------
-    total_submits = len(filtered_raw_df)
-    flagged_count = len(filtered_audit_df[filtered_audit_df["Level of Error"] != "CLEAN"]["Family / HH ID"].unique())
-    overall_error_rate = round((flagged_count / total_submits * 100), 1) if total_submits > 0 else 0.0
-
-    m1, m2, m3, m4 = st.columns(4)
-    m1.metric("Total Surveys Submitted", total_submits)
-    m2.metric("Total Flagged Families", flagged_count)
-    m3.metric("Overall Error Rate", f"{overall_error_rate}%")
-    m4.metric("Active Enumerators", filtered_raw_df['Enumerator'].nunique())
-
-    st.markdown("---")
-
-    # -------------------------------------------------------------
-    # SECTION 1: DAILY PRODUCTIVITY TRACKER
-    # -------------------------------------------------------------
-    st.markdown("### 📅 1. Daily Survey Productivity Tracker")
-    st.markdown("Monitor daily submission output per enumerator disaggregated by Barangay and Municipality.")
     
-    daily_prod = filtered_raw_df.groupby(["Municipality", "Barangay", "Enumerator", "Survey Date"]).size().reset_index(name="Surveys Completed")
-    st.dataframe(daily_prod.sort_values(by=["Survey Date", "Enumerator"], ascending=[False, True]), use_container_width=True, hide_index=True)
+    # Sidebar Filters
+    st.sidebar.header("🔍 Filter Master Audit")
+    sel_muni = st.sidebar.selectbox("Filter Municipality:", ["All"] + sorted(df['Municipality'].dropna().unique().tolist()))
+    sel_brgy = st.sidebar.selectbox("Filter Barangay:", ["All"] + sorted(df['Barangay'].dropna().unique().tolist()))
+    sel_enum = st.sidebar.selectbox("Filter Enumerator:", ["All"] + sorted(df['Enumerator'].dropna().unique().tolist()))
+
+    filtered_df = audit_df.copy()
+    if sel_muni != "All":
+        filtered_df = filtered_df[filtered_df["Municipality"] == sel_muni]
+    if sel_brgy != "All":
+        filtered_df = filtered_df[filtered_df["Barangay"] == sel_brgy]
+    if sel_enum != "All":
+        filtered_df = filtered_df[filtered_df["Enumerator"] == sel_enum]
+
+    # Metrics Row
+    c1, c2, c3, c4 = st.columns(4)
+    c1.metric("Total Raw Submissions", len(df))
+    c2.metric("Total Flagged Errors", len(audit_df))
+    c3.metric("Filtered Errors Shown", len(filtered_df))
+    c4.metric("Active Enumerators", df['Enumerator'].nunique())
 
     st.markdown("---")
+    st.markdown("### 📋 Master Quality Audit Table")
+    st.markdown("Here is every flagged household, enumerator, date, and exact error description in one easy table.")
 
-    # -------------------------------------------------------------
-    # SECTION 2: ENUMERATOR ERROR RATE SCORECARD
-    # -------------------------------------------------------------
-    st.markdown("### 📊 2. Enumerator Error Rate & Compliance Scorecard")
-    st.markdown("Instantly identify staff error rates and overall confidence ratings for immediate intervention.")
-
-    enum_scorecard = filtered_audit_df.groupby(["Municipality", "Barangay", "Enumerator"]).agg(
-        Total_Surveys=('Family / HH ID', 'nunique'),
-        Critical_Errors=('Level of Error', lambda x: (x == 'CRITICAL').sum()),
-        Major_Errors=('Level of Error', lambda x: (x == 'MAJOR').sum())
-    ).reset_index()
-
-    enum_scorecard['Total Errors'] = enum_scorecard['Critical_Errors'] + enum_scorecard['Major_Errors']
-    enum_scorecard['Error Rate (%)'] = ((enum_scorecard['Total Errors'] / enum_scorecard['Total_Surveys'].replace(0, 1)) * 100).clip(0, 100).round(1)
-    enum_scorecard['Confidence Score (%)'] = (100 - enum_scorecard['Error Rate (%)']).clip(0, 100).round(1)
-    enum_scorecard['Status'] = enum_scorecard['Confidence Score (%)'].apply(lambda s: 'High 🟢' if s >= 85 else ('Moderate 🟡' if s >= 70 else 'Low / Needs Coaching 🔴'))
-
-    st.dataframe(
-        enum_scorecard[[
-            "Municipality", "Barangay", "Enumerator", "Total_Surveys", 
-            "Total Errors", "Error Rate (%)", "Confidence Score (%)", "Status"
-        ]].sort_values(by="Error Rate (%)", ascending=False),
-        use_container_width=True,
-        hide_index=True
-    )
-
-    st.markdown("---")
-
-    # -------------------------------------------------------------
-    # SECTION 3: FAMILY ERROR AUDIT & COACHING DESK
-    # -------------------------------------------------------------
-    st.markdown("### 👨‍👩‍👧‍👦 3. Family Error Audit & Coaching Desk")
-    st.markdown("Select any flagged Family/Household ID to view **all associated errors** and log your supervisory coaching notes.")
-
-    flagged_dossiers = filtered_audit_df[filtered_audit_df["Level of Error"] != "CLEAN"]
-
-    if not flagged_dossiers.empty:
-        unique_families = sorted([str(x) for x in flagged_dossiers["Family / HH ID"].dropna().unique().tolist()])
-        selected_family = st.selectbox("Select Family / Household ID for Audit & Coaching:", unique_families)
+    if not filtered_df.empty:
+        st.dataframe(filtered_df, use_container_width=True, hide_index=True)
         
-        family_errors = flagged_dossiers[flagged_dossiers["Family / HH ID"].astype(str) == selected_family]
-        
-        if not family_errors.empty:
-            lead_row = family_errors.iloc[0]
-            
-            st.markdown(f"#### 📋 Household Error Dossier: `{selected_family}`")
-            col_a, col_b, col_c = st.columns(3)
-            col_a.write(f"**Municipality / Barangay:** {lead_row['Municipality']} / {lead_row['Barangay']}")
-            col_b.write(f"**Enumerator:** {lead_row['Enumerator']}")
-            col_c.write(f"**Survey Date:** {lead_row['Survey Date']}")
-            
-            st.markdown("##### ⚠️ All Flagged Errors on this Family Form:")
-            for idx, err_row in family_errors.iterrows():
-                badge = "🔴 CRITICAL" if err_row["Level of Error"] == "CRITICAL" else "🟠 MAJOR"
-                st.markdown(f"> **{badge} | Field / Question:** `{err_row['Question/Field']}`  \n> **Issue:** {err_row['Error Description (Brief)']}")
-            
-            st.markdown("##### 📝 Supervisor Coaching & Corrective Log")
-            coaching_input = st.text_area(f"Log coaching notes for Family {selected_family} (to discuss with {lead_row['Enumerator']}):", placeholder="E.g., Reminded field staff to cross-verify education module skip-logic...")
-            if st.button(f"Save Coaching Record for {selected_family}"):
-                st.success(f"Coaching notes successfully saved for Family {selected_family}!")
+        # Download button for Excel/CSV
+        csv_export = filtered_df.to_csv(index=False).encode('utf-8')
+        st.download_button(
+            label="📥 Download Master Error Table as CSV",
+            data=csv_export,
+            file_name=f"master_quality_audit_{datetime.now().strftime('%Y-%m-%d')}.csv",
+            mime='text/csv'
+        )
     else:
-        st.success("✅ No family errors or data integrity issues found under current filters!")
+        st.success("✅ Clean! No errors detected under the current filter selection.")
+
+    with st.expander("🛠️ Debug: View Detected KoBo Column Mappings"):
+        st.write(f"**Enumerator Column Detected:** `{col_enum}`")
+        st.write(f"**Barangay Column Detected:** `{col_brgy}`")
+        st.write(f"**Municipality Column Detected:** `{col_muni}`")
+        st.write(f"**Family / HH ID Column Detected:** `{col_family}`")
+        st.write(f"**GPS / Location Column Detected:** `{col_loc}`")
 
 else:
-    st.warning("⚠️ No records loaded. Please verify your Kobo token connection.")
+    st.warning("⚠️ No records loaded. Please verify your Kobo token and Asset UIDs.")
