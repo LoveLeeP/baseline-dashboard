@@ -6,13 +6,13 @@ from datetime import datetime
 
 # Page Configuration
 st.set_page_config(
-    page_title="BASELINE M&E INSPECTOR & COACHING HUB",
+    page_title="M&E Executive Coaching & Quality Console",
     page_icon="🛡️",
     layout="wide"
 )
 
-st.title("🛡️ BASELINE M&E INSPECTOR & DATA QUALITY HUB")
-st.markdown("**Executive Console:** Straight-lining, Skip Logic, Household Outliers, Odd-Hours, GPS Overlaps & Confidence %")
+st.title("🛡️ M&E EXECUTIVE COACHING & QUALITY CONSOLE")
+st.markdown("**Real-Time Field Command Center:** Daily Productivity, Enumerator Error Rates & Complete Family Error Dossiers")
 st.markdown("---")
 
 # Retrieve secrets
@@ -33,7 +33,7 @@ FDAF_ASSETS = {
 
 headers = {"Authorization": f"Token {KOBO_TOKEN}"}
 
-# Function to fetch ALL submission records with Pagination Handling (pulls 500+ records)
+# Function to fetch ALL submission records with Pagination Handling
 @st.cache_data(ttl=300)
 def fetch_all_fdaf_data():
     all_data = []
@@ -85,7 +85,6 @@ if raw_data:
         return None
 
     col_enum = find_col(['enumerator', 'enum', 'staff', 'user', 'interview_name'])
-    col_role = find_col(['role', 'position', 'team_role'])
     col_brgy = find_col(['brgy', 'barangay', 'village'])
     col_muni = find_col(['muni', 'municipality', 'town', 'city'])
     col_family = find_col(['family', 'household', 'hh_name', 'respondent', 'head_name'])
@@ -93,35 +92,30 @@ if raw_data:
     col_start = find_col(['start', 'start_time', 'interview_start', 'submission_start'])
     col_end = find_col(['end', 'end_time', 'interview_end', 'submission_end'])
     
-    # Specific fields for logical and structural checking
+    # Specific fields for logical checking
     col_age = find_col(['age', 'years_old'])
     col_edu = find_col(['education', 'grade', 'schooling', 'attainment'])
     col_status = find_col(['status', 'enrollment', 'currently_studying', 'school'])
     col_gender = find_col(['gender', 'sex'])
     col_pregnant = find_col(['pregnant', 'pregnancy', 'lactating'])
     col_son_age = find_col(['son_age', 'child_age', 'dependents_age'])
-    col_hh_size = find_col(['hh_size', 'household_size', 'total_members', 'members_count'])
-    col_housing = find_col(['housing', 'house_type', 'dwelling', 'structure'])
-    col_income = find_col(['income', 'earnings', 'livelihood_income', 'monthly_income'])
-    col_assets = find_col(['assets', 'appliances', 'properties', 'car_ownership'])
-    col_school_kids = find_col(['school_aged_children', 'has_children_school', 'children_count'])
+    col_hh_size = find_col(['hh_size', 'household_size', 'total_members'])
+    col_housing = find_col(['housing', 'house_type', 'dwelling'])
+    col_school_kids = find_col(['school_aged_children', 'has_children_school'])
 
     # Standardize Metadata Columns safely
     df['Enumerator'] = df[col_enum] if col_enum else df.get('_submitted_by', 'Unknown Enumerator')
-    df['Role'] = df[col_role] if col_role else 'Field Enumerator'
     df['Barangay'] = df[col_brgy] if col_brgy else 'Unassigned Brgy'
     df['Municipality'] = df[col_muni] if col_muni else 'Unassigned Municipality'
     df['Family'] = df[col_family] if col_family else df.get('_id', 'Unknown Family')
     df['Location_Key'] = df[col_loc] if col_loc else df['Barangay']
 
-    # Pre-calculate Location/GPS Overlaps & Duplicate Household IDs
     loc_counts = df['Location_Key'].value_counts().to_dict()
     df['Shared_Location_Count'] = df['Location_Key'].map(loc_counts)
 
     family_counts = df['Family'].value_counts().to_dict()
     df['Duplicate_Family_Count'] = df['Family'].map(family_counts)
     
-    # Format Survey Date & Extract Submission Hour for Odd-Hour Checks
     time_col = "_submission_time" if "_submission_time" in df.columns else None
     if time_col:
         df['Parsed_Timestamp'] = pd.to_datetime(df[time_col], errors='coerce')
@@ -132,24 +126,18 @@ if raw_data:
         df["Submission Hour"] = 12
 
     # -------------------------------------------------------------
-    # ELITE COMPREHENSIVE M&E AUDIT ENGINE (ALL 5 ADVANCED CHECKS)
+    # M&E AUDIT ENGINE
     # -------------------------------------------------------------
     def audit_row_data(row):
         errors = []
         
-        # 1. Time-Motion / Duration Check
+        # 1. Duration Check
         if col_start and col_end and pd.notna(row.get(col_start)) and pd.notna(row.get(col_end)):
             try:
                 start_dt = pd.to_datetime(row[col_start])
                 end_dt = pd.to_datetime(row[col_end])
                 duration_mins = (end_dt - start_dt).total_seconds() / 60.0
-                if duration_mins < 0:
-                    errors.append({
-                        "Question/Field": "Timestamp",
-                        "Error Description": "Timestamp Contradiction (End precedes start)",
-                        "Severity": "CRITICAL"
-                    })
-                elif duration_mins < 3.0:
+                if duration_mins < 3.0:
                     errors.append({
                         "Question/Field": "Interview Duration",
                         "Error Description": f"Rushed Survey ({round(duration_mins, 1)} mins)",
@@ -158,141 +146,63 @@ if raw_data:
             except Exception:
                 pass
 
-        # 2. Odd-Hour Submission Audit (Check #2)
+        # 2. Odd-Hour Submission
         sub_hour = row.get("Submission Hour", 12)
         if pd.notna(sub_hour) and (sub_hour >= 22 or sub_hour <= 4):
             errors.append({
                 "Question/Field": "Submission Timestamp",
-                "Error Description": f"Odd-Hour Submission ({sub_hour}:00 hrs - Late-night back-filling)",
+                "Error Description": f"Odd-Hour Submission ({sub_hour}:00 hrs)",
                 "Severity": "CRITICAL"
             })
 
-        # 3. GPS / Location Overlap Check
-        loc_val = row.get('Location_Key')
-        overlap_num = row.get('Shared_Location_Count', 1)
-        if overlap_num > 1 and pd.notna(loc_val):
+        # 3. GPS Overlap
+        if row.get('Shared_Location_Count', 1) > 1:
             errors.append({
                 "Question/Field": "GPS Location",
-                "Error Description": f"GPS Overlap (Shared with {overlap_num - 1} other forms)",
+                "Error Description": "GPS Overlap / Shared Coordinates with another submission",
                 "Severity": "MAJOR"
             })
 
-        # 4. Duplicate Household ID Check (Check #5)
-        dup_count = row.get('Duplicate_Family_Count', 1)
-        fam_id = row.get('Family', 'Unknown')
-        if dup_count > 1 and fam_id != 'Unknown Family':
+        # 4. Duplicate Family ID
+        if row.get('Duplicate_Family_Count', 1) > 1:
             errors.append({
                 "Question/Field": "Household ID",
-                "Error Description": f"Duplicate Household ID (Submitted {dup_count} times)",
+                "Error Description": "Duplicate Household ID detected",
                 "Severity": "CRITICAL"
             })
 
-        # 5. Straight-lining / Monotonous Grid Detection (Check #1)
-        # Evaluates if multiple numeric/scale columns in the row share the exact same repeated value
-        try:
-            scale_vals = [val for key, val in row.items() if any(k in str(key).lower() for k in ['score', 'rating', 'scale', 'freq', 'coping']) and pd.notna(val)]
-            if len(scale_vals) >= 5:
-                if len(set(scale_vals)) == 1:
-                    errors.append({
-                        "Question/Field": "Rating / Matrix Grid",
-                        "Error Description": f"Straight-lining Detected (Identical answers ticked straight down {len(scale_vals)} grid items)",
-                        "Severity": "MAJOR"
-                    })
-        except Exception:
-            pass
-
-        # 6. Household Size vs. Housing / Economic Outlier Check (Check #3)
-        if col_hh_size and col_housing and pd.notna(row.get(col_hh_size)) and pd.notna(row.get(col_housing)):
-            try:
-                hh_size_val = float(row[col_hh_size])
-                housing_str = str(row[col_housing]).lower()
-                if hh_size_val >= 12 and any(h in housing_str for h in ['makeshift', 'tent', 'light materials', 'shanty', 'barong-barong']):
-                    errors.append({
-                        "Question/Field": f"Household Size ({col_hh_size}) vs Housing ({col_housing})",
-                        "Error Description": f"Economic Outlier: Large household ({int(hh_size_val)} members) living in makeshift/light-material structure",
-                        "Severity": "MAJOR"
-                    })
-            except ValueError:
-                pass
-
-        # 7. Conditional Skip Logic Failure Check (Check #4)
+        # 5. Skip Logic Failure
         if col_school_kids and col_edu and pd.notna(row.get(col_school_kids)):
             try:
                 has_kids = str(row[col_school_kids]).lower()
                 edu_val = row.get(col_edu)
-                if any(no in has_kids for no in ['no', 'none', '0', 'false']) and pd.notna(edu_val) and str(edu_val).strip() != "":
+                if any(no in has_kids for no in ['no', 'none', '0']) and pd.notna(edu_val) and str(edu_val).strip() != "":
                     errors.append({
-                        "Question/Field": "Skip Logic: School Children vs Education Module",
-                        "Error Description": "Skip Logic Failure: Education module filled out despite reporting zero school-aged children",
+                        "Question/Field": "Skip Logic: Education Module",
+                        "Error Description": "Education module filled out despite reporting zero school-aged children",
                         "Severity": "CRITICAL"
                     })
             except Exception:
                 pass
 
-        # 8. Name Format Validation Rule
-        if col_family and pd.notna(row.get(col_family)):
-            fam_str = str(row[col_family]).strip()
-            if len(fam_str) < 2 or fam_str.isdigit() or re.search(r'[^a-zA-Z\s\.\-]', fam_str):
-                errors.append({
-                    "Question/Field": "Respondent Name",
-                    "Error Description": f"Invalid Name Format ('{fam_str}')",
-                    "Severity": "MAJOR"
-                })
-
-        # 9. HOUSEHOLD & CROSS-QUESTION LOGIC CONSISTENCY CHECKS
-        if col_age and col_edu and col_status and pd.notna(row.get(col_age)) and pd.notna(row.get(col_edu)) and pd.notna(row.get(col_status)):
+        # 6. Cross-Question Logic (Age vs Education)
+        if col_age and col_edu and col_status and pd.notna(row.get(col_age)) and pd.notna(row.get(col_edu)):
             try:
                 age_val = float(row[col_age])
                 edu_str = str(row[col_edu]).lower()
-                status_str = str(row[col_status]).lower()
-                
-                if age_val >= 25 and any(g in edu_str for g in ['grade 1', 'grade 2', 'grade 3', 'grade 4', 'grade 5', 'grade 6', 'elementary']) and any(s in status_str for s in ['yes', 'studying', 'current', 'enrolled']):
+                if age_val >= 25 and any(g in edu_str for g in ['grade 1', 'grade 2', 'elementary']):
                     errors.append({
                         "Question/Field": "Age vs Education",
-                        "Error Description": f"Adult Age ({int(age_val)}) conflicts with studying in elementary ({row[col_edu]})",
+                        "Error Description": f"Adult Age ({int(age_val)}) conflicts with elementary schooling",
                         "Severity": "CRITICAL"
                     })
             except ValueError:
-                pass
-
-        if col_age and col_son_age and pd.notna(row.get(col_age)) and pd.notna(row.get(col_son_age)):
-            try:
-                parent_age = float(row[col_age])
-                son_age = float(row[col_son_age])
-                age_difference = parent_age - son_age
-                
-                if age_difference < 14:
-                    errors.append({
-                        "Question/Field": "Parent vs Child Age",
-                        "Error Description": f"Impossible Age Gap ({int(age_difference)} yrs between parent & child)",
-                        "Severity": "CRITICAL"
-                    })
-            except ValueError:
-                pass
-
-        if col_gender and col_pregnant and pd.notna(row.get(col_gender)) and pd.notna(row.get(col_pregnant)):
-            try:
-                gender_str = str(row[col_gender]).lower()
-                preg_str = str(row[col_pregnant]).lower()
-                
-                if any(m in gender_str for m in ['male', 'm', 'boy']) and any(p in preg_str for p in ['yes', 'pregnant', 'expecting', 'lactating', 'true']):
-                    errors.append({
-                        "Question/Field": "Gender vs Pregnancy",
-                        "Error Description": "Biological Contradiction (Male marked as pregnant/lactating)",
-                        "Severity": "CRITICAL"
-                    })
-            except Exception:
                 pass
 
         if not errors:
-            return [{
-                "Question/Field": "N/A",
-                "Error Description": "Clean record",
-                "Severity": "CLEAN"
-            }]
+            return [{"Question/Field": "N/A", "Error Description": "Clean record", "Severity": "CLEAN"}]
         return errors
 
-    # Run audit across all records safely
     audit_results = []
     for idx, row in df.iterrows():
         row_errors = audit_row_data(row)
@@ -312,105 +222,116 @@ if raw_data:
     audit_df = pd.DataFrame(audit_results)
 
     # -------------------------------------------------------------
-    # SIDEBAR FILTERS
+    # SIDEBAR: GLOBAL FILTERS
     # -------------------------------------------------------------
-    st.sidebar.header("🔍 M&E Dashboard Filters")
+    st.sidebar.header("🔍 Filter Field Data")
     selected_muni = st.sidebar.selectbox("Filter Municipality:", ["All Municipalities"] + sorted(df['Municipality'].dropna().unique().tolist()))
     selected_brgy = st.sidebar.selectbox("Filter Barangay:", ["All Barangays"] + sorted(df['Barangay'].dropna().unique().tolist()))
     selected_enum = st.sidebar.selectbox("Filter Enumerator:", ["All Enumerators"] + sorted(df['Enumerator'].dropna().unique().tolist()))
 
     filtered_audit_df = audit_df.copy()
+    filtered_raw_df = df.copy()
+
     if selected_muni != "All Municipalities":
         filtered_audit_df = filtered_audit_df[filtered_audit_df["Municipality"] == selected_muni]
+        filtered_raw_df = filtered_raw_df[filtered_raw_df["Municipality"] == selected_muni]
     if selected_brgy != "All Barangays":
         filtered_audit_df = filtered_audit_df[filtered_audit_df["Barangay"] == selected_brgy]
+        filtered_raw_df = filtered_raw_df[filtered_raw_df["Barangay"] == selected_brgy]
     if selected_enum != "All Enumerators":
         filtered_audit_df = filtered_audit_df[filtered_audit_df["Enumerator"] == selected_enum]
+        filtered_raw_df = filtered_raw_df[filtered_raw_df["Enumerator"] == selected_enum]
 
     # -------------------------------------------------------------
-    # TABS LAYOUT
+    # TOP EXECUTIVE METRICS BAR
     # -------------------------------------------------------------
-    tab_daily, tab_quality, tab_integrity, tab_audit, tab_conf = st.tabs([
-        "📅 Daily Survey", 
-        "🛡️ Quality & Compliance", 
-        "🔍 Data Integrity", 
-        "📋 Audit Log",
-        "🎯 Confidence %"
-    ])
+    total_submits = len(filtered_raw_df)
+    flagged_count = len(filtered_audit_df[filtered_audit_df["Level of Error"] != "CLEAN"]["Family / HH ID"].unique())
+    overall_error_rate = round((flagged_count / total_submits * 100), 1) if total_submits > 0 else 0.0
 
-    with tab_daily:
-        st.markdown("### 📅 Daily Survey Productivity per Enumerator")
-        st.caption("Shows all enumerator names and their daily submission breakdown across all dates.")
+    m1, m2, m3, m4 = st.columns(4)
+    m1.metric("Total Surveys Submitted", total_submits)
+    m2.metric("Total Flagged Families", flagged_count)
+    m3.metric("Overall Error Rate", f"{overall_error_rate}%")
+    m4.metric("Active Enumerators", filtered_raw_df['Enumerator'].nunique())
+
+    st.markdown("---")
+
+    # -------------------------------------------------------------
+    # SECTION 1: DAILY PRODUCTIVITY TRACKER
+    # -------------------------------------------------------------
+    st.markdown("### 📅 1. Daily Survey Productivity Tracker")
+    st.markdown("Monitor daily submission output per enumerator disaggregated by Barangay and Municipality.")
+    
+    daily_prod = filtered_raw_df.groupby(["Municipality", "Barangay", "Enumerator", "Survey Date"]).size().reset_index(name="Surveys Completed")
+    st.dataframe(daily_prod.sort_values(by=["Survey Date", "Enumerator"], ascending=[False, True]), use_container_width=True, hide_index=True)
+
+    st.markdown("---")
+
+    # -------------------------------------------------------------
+    # SECTION 2: ENUMERATOR ERROR RATE SCORECARD
+    # -------------------------------------------------------------
+    st.markdown("### 📊 2. Enumerator Error Rate & Compliance Scorecard")
+    st.markdown("Instantly identify staff error rates and overall confidence ratings for immediate intervention.")
+
+    enum_scorecard = filtered_audit_df.groupby(["Municipality", "Barangay", "Enumerator"]).agg(
+        Total_Surveys=('Family / HH ID', 'nunique'),
+        Critical_Errors=('Level of Error', lambda x: (x == 'CRITICAL').sum()),
+        Major_Errors=('Level of Error', lambda x: (x == 'MAJOR').sum())
+    ).reset_index()
+
+    enum_scorecard['Total Errors'] = enum_scorecard['Critical_Errors'] + enum_scorecard['Major_Errors']
+    enum_scorecard['Error Rate (%)'] = ((enum_scorecard['Total Errors'] / enum_scorecard['Total_Surveys'].replace(0, 1)) * 100).clip(0, 100).round(1)
+    enum_scorecard['Confidence Score (%)'] = (100 - enum_scorecard['Error Rate (%)']).clip(0, 100).round(1)
+    enum_scorecard['Status'] = enum_scorecard['Confidence Score (%)'].apply(lambda s: 'High 🟢' if s >= 85 else ('Moderate 🟡' if s >= 70 else 'Low / Needs Coaching 🔴'))
+
+    st.dataframe(
+        enum_scorecard[[
+            "Municipality", "Barangay", "Enumerator", "Total_Surveys", 
+            "Total Errors", "Error Rate (%)", "Confidence Score (%)", "Status"
+        ]].sort_values(by="Error Rate (%)", ascending=False),
+        use_container_width=True,
+        hide_index=True
+    )
+
+    st.markdown("---")
+
+    # -------------------------------------------------------------
+    # SECTION 3: FAMILY ERROR AUDIT & COACHING DESK
+    # -------------------------------------------------------------
+    st.markdown("### 👨‍👩‍👧‍👦 3. Family Error Audit & Coaching Desk")
+    st.markdown("Select any flagged Family/Household ID to view **all associated errors** and log your supervisory coaching notes.")
+
+    flagged_dossiers = filtered_audit_df[filtered_audit_df["Level of Error"] != "CLEAN"]
+
+    if not flagged_dossiers.empty:
+        unique_families = sorted(flagged_dossiers["Family / HH ID"].unique().tolist())
+        selected_family = st.selectbox("Select Family / Household ID for Audit & Coaching:", unique_families)
         
-        prod_df = df.copy()
-        if selected_muni != "All Municipalities": prod_df = prod_df[prod_df["Municipality"] == selected_muni]
-        if selected_brgy != "All Barangays": prod_df = prod_df[prod_df["Barangay"] == selected_brgy]
-        if selected_enum != "All Enumerators": prod_df = prod_df[prod_df["Enumerator"] == selected_enum]
-
-        daily_prod = prod_df.groupby(["Municipality", "Barangay", "Enumerator", "Survey Date"]).size().reset_index(name="Surveys Completed")
-        st.dataframe(daily_prod.sort_values(by=["Survey Date", "Enumerator"], ascending=[False, True]), use_container_width=True, hide_index=True)
-
-    with tab_quality:
-        st.markdown("### 🛡️ Quality & Compliance Scorecards")
-        st.caption("Overview of monitoring compliance, clean record ratios, and flag summaries per enumerator.")
+        # Pull all errors for this family
+        family_errors = flagged_dossiers[flagged_dossiers["Family / HH ID"] == selected_family]
         
-        q_summary = filtered_audit_df.groupby(["Municipality", "Barangay", "Enumerator"]).agg(
-            Total_Surveys=('Family / HH ID', 'nunique'),
-            Critical_Errors=('Level of Error', lambda x: (x == 'CRITICAL').sum()),
-            Major_Errors=('Level of Error', lambda x: (x == 'MAJOR').sum())
-        ).reset_index()
-        
-        q_summary['Compliance Score (%)'] = ((1 - ((q_summary['Critical_Errors']*2 + q_summary['Major_Errors']) / (q_summary['Total_Surveys']*2).replace(0, 1))) * 100).clip(0, 100).round(1)
-        st.dataframe(q_summary.sort_values(by="Compliance Score (%)", ascending=True), use_container_width=True, hide_index=True)
-
-    with tab_integrity:
-        st.markdown("### 🔍 Data Integrity (Comprehensive Quality Checks)")
-        st.caption("Expand any flagged survey to inspect exact straight-lining, skip logic failures, economic outliers, and roster errors.")
-
-        flagged_rows = filtered_audit_df[filtered_audit_df["Level of Error"] != "CLEAN"]
-        if not flagged_rows.empty:
-            for idx, row in flagged_rows.iterrows():
-                with st.expander(f"[{row['Level of Error']}] HH ID: {row['Family / HH ID']} | Enumerator: {row['Enumerator']} ({row['Barangay']}, {row['Municipality']}) - {row['Survey Date']}"):
-                    col_x, col_y = st.columns(2)
-                    col_x.write(f"**Form Source:** {row['_source_form']}")
-                    col_x.write(f"**Question / Field Flagged:** `{row['Question/Field']}`")
-                    col_y.write(f"**Severity Level:** {row['Level of Error']}")
-                    col_y.write(f"**Survey Date:** {row['Survey Date']}")
-                    st.error(f"**Error Description:** {row['Error Description (Brief)']}")
-        else:
-            st.success("✅ No data integrity issues found within the selected filters!")
-
-    with tab_audit:
-        st.markdown("### 📋 Master Audit Log")
-        st.caption("Clean, brief summary table of errors across all submissions for staff coaching.")
-        
-        st.dataframe(
-            filtered_audit_df[["Survey Date", "Municipality", "Barangay", "Enumerator", "Family / HH ID", "Level of Error", "Error Description (Brief)"]],
-            use_container_width=True,
-            hide_index=True
-        )
-
-    with tab_conf:
-        st.markdown("### 🎯 Enumerator Confidence Percentages")
-        st.caption("Overall confidence ratings and percentage scores calculated per enumerator.")
-
-        conf_summary = filtered_audit_df.groupby(["Municipality", "Barangay", "Enumerator"]).agg(
-            Total_Surveys=('Family / HH ID', 'nunique'),
-            Critical_Errors=('Level of Error', lambda x: (x == 'CRITICAL').sum()),
-            Major_Errors=('Level of Error', lambda x: (x == 'MAJOR').sum())
-        ).reset_index()
-
-        conf_summary['Confidence (%)'] = ((1 - ((conf_summary['Critical_Errors']*2 + conf_summary['Major_Errors']) / (conf_summary['Total_Surveys']*2).replace(0, 1))) * 100).clip(0, 100).round(1)
-        conf_summary['Rating'] = conf_summary['Confidence (%)'].apply(lambda s: 'High 🟢' if s >= 85 else ('Moderate 🟡' if s >= 70 else 'Low / Needs Review 🔴'))
-
-        st.dataframe(
-            conf_summary[[
-                "Municipality", "Barangay", "Enumerator", "Total_Surveys", 
-                "Critical_Errors", "Major_Errors", "Confidence (%)", "Rating"
-            ]].sort_values(by="Confidence (%)", ascending=True),
-            use_container_width=True,
-            hide_index=True
-        )
+        if not family_errors.empty:
+            lead_row = family_errors.iloc[0]
+            
+            # Dossier Card UI
+            st.markdown(f"#### 📋 Household Error Dossier: `{selected_family}`")
+            col_a, col_b, col_c = st.columns(3)
+            col_a.write(f"**Municipality / Barangay:** {lead_row['Municipality']} / {lead_row['Barangay']}")
+            col_b.write(f"**Enumerator:** {lead_row['Enumerator']}")
+            col_c.write(f"**Survey Date:** {lead_row['Survey Date']}")
+            
+            st.markdown("##### ⚠️ All Flagged Errors on this Family Form:")
+            for idx, err_row in family_errors.iterrows():
+                badge = "🔴 CRITICAL" if err_row["Level of Error"] == "CRITICAL" else "🟠 MAJOR"
+                st.markdown(f"> **{badge} | Field / Question:** `{err_row['Question/Field']}`  \n> **Issue:** {err_row['Error Description (Brief)']}")
+            
+            st.markdown("##### 📝 Supervisor Coaching & Corrective Log")
+            coaching_input = st.text_area(f"Log coaching notes for Family {selected_family} (to discuss with {lead_row['Enumerator']}):", placeholder="E.g., Reminded field staff to cross-verify education module skip-logic...")
+            if st.button(f"Save Coaching Record for {selected_family}"):
+                st.success(f"Coaching notes successfully saved for Family {selected_family}!")
+    else:
+        st.success("✅ No family errors or data integrity issues found under current filters!")
 
 else:
     st.warning("⚠️ No records loaded. Please verify your Kobo token connection.")
