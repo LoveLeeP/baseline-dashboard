@@ -137,10 +137,18 @@ if raw_data:
         if row.get('Duplicate_HH_Count', 1) > 1:
             errors.append("Duplicate Household ID (Same ID submitted multiple times)")
 
-        # 5. General Missing Data Check (Scans all columns for blanks)
-        blank_cols = [c for c in df.columns if pd.isna(row.get(c)) and not c.startswith('_')]
-        if len(blank_cols) > 5:
-            errors.append(f"High Incompleteness ({len(blank_cols)} blank fields detected)")
+        # 5. Safe Missing Data Check
+        blank_count = 0
+        for c in df.columns:
+            if not c.startswith('_'):
+                val = row.get(c)
+                if pd.api.types.is_scalar(val) and (pd.isna(val) or str(val).strip() == ""):
+                    blank_count += 1
+                elif isinstance(val, (list, dict)) and len(val) == 0:
+                    blank_count += 1
+        
+        if blank_count > 10:
+            errors.append(f"High Incompleteness ({blank_count} blank fields detected)")
 
         # If errors found, log them
         if errors:
