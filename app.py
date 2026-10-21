@@ -12,7 +12,7 @@ st.set_page_config(
 )
 
 st.title("🛡️ M&E FIELD INSPECTION & ENUMERATOR COACHING HUB")
-st.markdown("**Specialist & Staff Console:** Duration & Timestamp Overlaps, GPS Overlaps, Question Scrutiny & Coaching Proofs")
+st.markdown("**Specialist & Staff Console:** Cross-Question Logic Audits, Duration Overlaps, GPS Overlaps & Coaching Proofs")
 st.markdown("---")
 
 # Retrieve secrets
@@ -77,7 +77,7 @@ if raw_data:
     # Clean column names (strip Kobo group slash prefixes)
     df.columns = [col.split('/')[-1] if '/' in col else col for col in df.columns]
 
-    # Dynamic Column Locator for M&E Metadata
+    # Dynamic Column Locator for M&E Metadata & Cross-Question Fields
     def find_col(keywords):
         for col in df.columns:
             if any(kw in col.lower() for kw in keywords):
@@ -92,8 +92,12 @@ if raw_data:
     col_loc = find_col(['location', 'gps', 'geo', 'coordinates', 'lat', 'long'])
     col_start = find_col(['start', 'start_time', 'interview_start', 'submission_start'])
     col_end = find_col(['end', 'end_time', 'interview_end', 'submission_end'])
+    
+    # Specific fields for cross-question consistency checks
     col_age = find_col(['age', 'years_old'])
     col_edu = find_col(['education', 'grade', 'schooling', 'attainment'])
+    col_marital = find_col(['marital', 'civil_status', 'status'])
+    col_job = find_col(['occupation', 'employment', 'work', 'job', 'livelihood'])
 
     # Standardize Metadata Columns safely
     df['Enumerator'] = df[col_enum] if col_enum else df.get('_submitted_by', 'Unknown Enumerator')
@@ -125,7 +129,7 @@ if raw_data:
         return False, ""
 
     # -------------------------------------------------------------
-    # RIGOROUS M&E AUDIT & TIME-MOTION ENGINE (CRASH-PROOF)
+    # RIGOROUS M&E CROSS-QUESTION & TIME-MOTION AUDIT ENGINE
     # -------------------------------------------------------------
     def audit_row_data(row):
         errors = []
@@ -162,27 +166,56 @@ if raw_data:
                 "Severity": "MAJOR"
             })
 
-        # 3. Logical Inconsistency Check (Age vs Education)
+        # 3. EXHAUSTIVE CROSS-QUESTION LOGIC CONSISTENCY CHECKS
+        
+        # Rule A: Age vs. Education Contradiction
         if col_age and col_edu and pd.notna(row.get(col_age)) and pd.notna(row.get(col_edu)):
             try:
                 age_val = float(row[col_age])
                 edu_str = str(row[col_edu]).lower()
                 if age_val > 25 and any(g in edu_str for g in ['grade 1', 'grade 2', 'grade 3', 'grade 4', 'grade 5', 'grade 6', 'elem']):
                     errors.append({
-                        "Question/Field": f"{col_age} vs {col_edu}",
-                        "Error Description": f"Logical Contradiction: Age ({int(age_val)} yrs) conflicts with Education Level ({row[col_edu]})",
+                        "Question/Field": f"Cross-Check: {col_age} vs {col_edu}",
+                        "Error Description": f"Logical Contradiction: Respondent is {int(age_val)} years old, but education attainment is logged as primary/elementary ({row[col_edu]}).",
                         "Severity": "CRITICAL"
                     })
             except ValueError:
                 pass
 
-        # 4. Exhaustive Question Scrutiny (Safely Handling Lists/Dicts)
+        # Rule B: Age vs. Marital Status Contradiction
+        if col_age and col_marital and pd.notna(row.get(col_age)) and pd.notna(row.get(col_marital)):
+            try:
+                age_val = float(row[col_age])
+                marital_str = str(row[col_marital]).lower()
+                if age_val < 15 and any(m in marital_str for m in ['married', 'widowed', 'divorced', 'separated']):
+                    errors.append({
+                        "Question/Field": f"Cross-Check: {col_age} vs {col_marital}",
+                        "Error Description": f"Logical Contradiction: Minor age ({int(age_val)} yrs) conflicts with marital status ({row[col_marital]}).",
+                        "Severity": "CRITICAL"
+                    })
+            except ValueError:
+                pass
+
+        # Rule C: Age vs. Employment / Occupation Contradiction
+        if col_age and col_job and pd.notna(row.get(col_age)) and pd.notna(row.get(col_job)):
+            try:
+                age_val = float(row[col_age])
+                job_str = str(row[col_job]).lower()
+                if age_val < 12 and not any(j in job_str for j in ['none', 'student', 'child', 'n/a', 'wala']):
+                    errors.append({
+                        "Question/Field": f"Cross-Check: {col_age} vs {col_job}",
+                        "Error Description": f"Logical Contradiction: Underage child ({int(age_val)} yrs) is logged with active occupation/employment ({row[col_job]}).",
+                        "Severity": "CRITICAL"
+                    })
+            except ValueError:
+                pass
+
+        # 4. General Text Scrutiny (Gibberish & Foreign Scripts)
         for col in row.index:
             if col in ['_id', '_uuid', '_submission_time', '_submitted_by', '_source_form', 'Enumerator', 'Role', 'Barangay', 'Municipality', 'Family', 'Location_Key', 'Shared_Location_Count', 'Survey Date']:
                 continue
             
             val = row.get(col)
-            # Skip if value is a list, dict, or missing
             if val is None or isinstance(val, (list, dict)):
                 continue
                 
@@ -211,7 +244,7 @@ if raw_data:
         if not errors:
             return [{
                 "Question/Field": "All Fields",
-                "Error Description": "Comprehensive Audit Passed: Clean of duration anomalies, GPS overlaps, and text errors.",
+                "Error Description": "Comprehensive Cross-Check Passed: All answers are logically consistent.",
                 "Severity": "CLEAN"
             }]
         return errors
@@ -260,13 +293,13 @@ if raw_data:
         "📊 Daily Productivity & Volume", 
         "🏛️ Geographic Summaries (Brgy & Muni)", 
         "🏆 Enumerator Confidence Scorecards", 
-        "🔍 Question Scrutiny & Coaching Proofs",
+        "🔍 Cross-Question Logic & Coaching Proofs",
         "🚨 Master Audit Trail"
     ])
 
     with tab1:
-        st.markdown("### 📊 Daily Survey Productivity per Enumerator")
-        st.caption("Day-by-day throughput tracking across field staff and locations.")
+        st.markdown("### 📊 Daily Survey Productivity Across All Submission Dates")
+        st.caption("Complete historical timeline of survey throughput per enumerator, barangay, and municipality.")
         
         time_col = "_submission_time" if "_submission_time" in df.columns else None
         if time_col:
@@ -277,7 +310,19 @@ if raw_data:
             if selected_enum != "All Enumerators": prod_df = prod_df[prod_df["Enumerator"] == selected_enum]
 
             daily_prod = prod_df.groupby(["Municipality", "Barangay", "Enumerator", "Survey Date"]).size().reset_index(name="Surveys Completed")
-            st.dataframe(daily_prod.sort_values(by="Survey Date", ascending=False), use_container_width=True, hide_index=True)
+            
+            st.markdown("#### 📅 Chronological Daily Submission Log")
+            st.dataframe(daily_prod.sort_values(by=["Survey Date", "Enumerator"], ascending=[True, True]), use_container_width=True, hide_index=True)
+            
+            st.markdown("---")
+            st.markdown("#### 📈 Multi-Day Productivity Matrix (Enumerator vs. Submission Dates)")
+            pivot_prod = daily_prod.pivot_table(
+                index=["Municipality", "Barangay", "Enumerator"], 
+                columns="Survey Date", 
+                values="Surveys Completed", 
+                fill_value=0
+            ).reset_index()
+            st.dataframe(pivot_prod, use_container_width=True, hide_index=True)
         else:
             st.info("Submission timestamps unavailable.")
 
@@ -297,7 +342,7 @@ if raw_data:
 
     with tab3:
         st.markdown("### 🏆 Enumerator Confidence Level & Quality Scorecards")
-        st.caption("Comprehensive rating per enumerator based on timestamp/duration flaws, GPS overlaps, logic contradictions, and text anomalies.")
+        st.caption("Comprehensive rating per enumerator based on cross-question contradictions, timestamp flaws, and GPS overlaps.")
 
         enum_summary = filtered_audit_df.groupby(["Municipality", "Barangay", "Role", "Enumerator"]).agg(
             Total_Surveys=('_id', 'nunique'),
@@ -319,8 +364,8 @@ if raw_data:
         )
 
     with tab4:
-        st.markdown("### 🔍 Question Scrutiny & Staff Coaching Proofs")
-        st.caption("Use these exact error proofs during staff coaching sessions to review timestamp overlaps, GPS clustering, and question discrepancies with enumerators.")
+        st.markdown("### 🔍 Cross-Question Logic & Staff Coaching Proofs")
+        st.caption("Inspect logical contradictions where answers across multiple questions clash with each other (e.g., Age vs. Marital Status, Age vs. Employment).")
 
         flagged_rows = filtered_audit_df[filtered_audit_df["Severity"] != "CLEAN"]
         if not flagged_rows.empty:
@@ -328,12 +373,12 @@ if raw_data:
                 with st.expander(f"[{row['Severity']}] Family: {row['Family']} | Enumerator: {row['Enumerator']} ({row['Barangay']}, {row['Municipality']})"):
                     col_x, col_y = st.columns(2)
                     col_x.write(f"**Form Source:** {row['_source_form']}")
-                    col_x.write(f"**Question / Field Scrutinized:** `{row['Question/Field']}`")
+                    col_x.write(f"**Cross-Check Field:** `{row['Question/Field']}`")
                     col_y.write(f"**Severity Level:** {row['Severity']}")
                     col_y.write(f"**Submission Time:** {row['_submission_time']}")
-                    st.error(f"**Coaching Audit Proof / Description:** {row['Error Description']}")
+                    st.error(f"**Logical Contradiction Proof:** {row['Error Description']}")
         else:
-            st.success("✅ All scrutinized submissions pass time-motion, GPS, and question quality standards within the selected filters!")
+            st.success("✅ All cross-question logic checks passed cleanly within the selected filters!")
 
     with tab5:
         st.markdown("### 🚨 Master Granular Error Audit Trail")
