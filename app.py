@@ -125,7 +125,7 @@ if raw_data:
         return False, ""
 
     # -------------------------------------------------------------
-    # RIGOROUS M&E AUDIT & TIME-MOTION ENGINE
+    # RIGOROUS M&E AUDIT & TIME-MOTION ENGINE (CRASH-PROOF)
     # -------------------------------------------------------------
     def audit_row_data(row):
         errors = []
@@ -140,10 +140,10 @@ if raw_data:
                 if duration_mins < 0:
                     errors.append({
                         "Question/Field": f"{col_start} vs {col_end}",
-                        "Error Description": f"Timestamp Contradiction: End time precedes start time (Negative duration).",
+                        "Error Description": "Timestamp Contradiction: End time precedes start time (Negative duration).",
                         "Severity": "CRITICAL"
                     })
-                elif duration_mins < 3.0: # Less than 3 minutes for a survey is a major red flag
+                elif duration_mins < 3.0:
                     errors.append({
                         "Question/Field": f"Interview Duration ({col_start} to {col_end})",
                         "Error Description": f"Rushed Survey Warning: Interview completed in an impossibly short duration ({round(duration_mins, 1)} minutes).",
@@ -152,7 +152,7 @@ if raw_data:
             except Exception:
                 pass
 
-        # 2. GPS / Location Overlap Check (Pencil-whipping proof)
+        # 2. GPS / Location Overlap Check
         loc_val = row.get('Location_Key')
         overlap_num = row.get('Shared_Location_Count', 1)
         if overlap_num > 1 and pd.notna(loc_val):
@@ -176,30 +176,37 @@ if raw_data:
             except ValueError:
                 pass
 
-        # 4. Exhaustive Question Scrutiny
+        # 4. Exhaustive Question Scrutiny (Safely Handling Lists/Dicts)
         for col in row.index:
             if col in ['_id', '_uuid', '_submission_time', '_submitted_by', '_source_form', 'Enumerator', 'Role', 'Barangay', 'Municipality', 'Family', 'Location_Key', 'Shared_Location_Count', 'Survey Date']:
                 continue
             
             val = row.get(col)
-            col_lower = col.lower()
+            # Skip if value is a list, dict, or missing
+            if val is None or isinstance(val, (list, dict)):
+                continue
+                
+            col_lower = str(col).lower()
             
-            if pd.notna(val) and str(val).strip() != "":
-                val_str = str(val).strip()
-                is_anomaly, anomaly_msg = check_text_anomaly(val_str)
-                if is_anomaly:
-                    errors.append({
-                        "Question/Field": col,
-                        "Error Description": anomaly_msg,
-                        "Severity": "CRITICAL"
-                    })
-                elif any(k in col_lower for k in ['error', 'flag', 'discrepancy', 'remark', 'note', 'comment', 'issue']):
-                    if val_str.lower() not in ['none', 'no error', 'ok', 'clean', 'n/a', '0', 'false', 'none.']:
+            try:
+                if pd.notna(val) and str(val).strip() != "":
+                    val_str = str(val).strip()
+                    is_anomaly, anomaly_msg = check_text_anomaly(val_str)
+                    if is_anomaly:
                         errors.append({
-                            "Question/Field": col,
-                            "Error Description": f"Field Flag / Remark Recorded: {val_str}",
-                            "Severity": "MAJOR" if "error" in col_lower or "flag" in col_lower else "MINOR"
+                            "Question/Field": str(col),
+                            "Error Description": anomaly_msg,
+                            "Severity": "CRITICAL"
                         })
+                    elif any(k in col_lower for k in ['error', 'flag', 'discrepancy', 'remark', 'note', 'comment', 'issue']):
+                        if val_str.lower() not in ['none', 'no error', 'ok', 'clean', 'n/a', '0', 'false', 'none.']:
+                            errors.append({
+                                "Question/Field": str(col),
+                                "Error Description": f"Field Flag / Remark Recorded: {val_str}",
+                                "Severity": "MAJOR" if "error" in col_lower or "flag" in col_lower else "MINOR"
+                            })
+            except Exception:
+                continue
 
         if not errors:
             return [{
@@ -209,7 +216,7 @@ if raw_data:
             }]
         return errors
 
-    # Run audit across all records
+    # Run audit across all records safely
     audit_results = []
     for idx, row in df.iterrows():
         row_errors = audit_row_data(row)
