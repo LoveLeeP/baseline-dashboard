@@ -2,16 +2,17 @@ import streamlit as st
 import pandas as pd
 import requests
 import re
+from datetime import datetime
 
 # Page Configuration
 st.set_page_config(
-    page_title="BASELINE M&E AUDIT & COMPLIANCE HUB",
+    page_title="COMPREHENSIVE M&E COACHING & INSPECTOR HUB",
     page_icon="🛡️",
     layout="wide"
 )
 
-st.title("🛡️ BASELINE M&E AUDIT & COMPLIANCE HUB")
-st.markdown("**Executive M&E Inspector Console:** Quality Scores, Enumerator Confidence %, Daily Productivity & Question-Level Audit Log")
+st.title("🛡️ M&E FIELD INSPECTION & ENUMERATOR COACHING HUB")
+st.markdown("**Specialist & Staff Console:** Duration & Timestamp Overlaps, GPS Overlaps, Question Scrutiny & Coaching Proofs")
 st.markdown("---")
 
 # Retrieve secrets
@@ -88,6 +89,9 @@ if raw_data:
     col_brgy = find_col(['brgy', 'barangay', 'village'])
     col_muni = find_col(['muni', 'municipality', 'town', 'city'])
     col_family = find_col(['family', 'household', 'hh_name', 'respondent', 'head_name'])
+    col_loc = find_col(['location', 'gps', 'geo', 'coordinates', 'lat', 'long'])
+    col_start = find_col(['start', 'start_time', 'interview_start', 'submission_start'])
+    col_end = find_col(['end', 'end_time', 'interview_end', 'submission_end'])
     col_age = find_col(['age', 'years_old'])
     col_edu = find_col(['education', 'grade', 'schooling', 'attainment'])
 
@@ -97,14 +101,68 @@ if raw_data:
     df['Barangay'] = df[col_brgy] if col_brgy else 'Unassigned Brgy'
     df['Municipality'] = df[col_muni] if col_muni else 'Unassigned Municipality'
     df['Family'] = df[col_family] if col_family else df.get('_id', 'Unknown Family')
+    df['Location_Key'] = df[col_loc] if col_loc else df['Barangay']
+
+    # Pre-calculate Location/GPS Overlaps
+    loc_counts = df['Location_Key'].value_counts().to_dict()
+    df['Shared_Location_Count'] = df['Location_Key'].map(loc_counts)
+
+    # Helper function for text/language anomaly checks
+    def check_text_anomaly(text):
+        if not isinstance(text, str):
+            return False, ""
+        txt = text.strip()
+        if len(txt) < 3:
+            return False, ""
+        if re.search(r'(.)\1{3,}', txt.lower()):
+            return True, f"Keyboard Mashing / Repeated Characters ('{txt}')"
+        if any(p in txt.lower() for p in ['asdf', 'qwer', 'zxcv', 'testtest', '123456', 'asdfgh', 'sample']):
+            return True, f"Placeholder / Test String Detected ('{txt}')"
+        if len(txt) > 5 and not re.search(r'[aeiouäöüéàèùñ]', txt.lower()):
+            return True, f"Consonant Mashing / Unpronounceable Text ('{txt}')"
+        if re.search(r'[\u0400-\u04FF\u4E00-\u9FFF\u0600-\u06FF\u3040-\u309F]', txt):
+            return True, f"Unexpected Foreign Script / Character Set ('{txt}')"
+        return False, ""
 
     # -------------------------------------------------------------
-    # RULE-BASED ANOMALY & ERROR DETECTION ENGINE
+    # RIGOROUS M&E AUDIT & TIME-MOTION ENGINE
     # -------------------------------------------------------------
     def audit_row_data(row):
         errors = []
         
-        # 1. Logical Inconsistency Check (CRITICAL) - e.g., Age vs Grade
+        # 1. Start Time vs End Time & Duration Audit
+        if col_start and col_end and pd.notna(row.get(col_start)) and pd.notna(row.get(col_end)):
+            try:
+                start_dt = pd.to_datetime(row[col_start])
+                end_dt = pd.to_datetime(row[col_end])
+                duration_mins = (end_dt - start_dt).total_seconds() / 60.0
+                
+                if duration_mins < 0:
+                    errors.append({
+                        "Question/Field": f"{col_start} vs {col_end}",
+                        "Error Description": f"Timestamp Contradiction: End time precedes start time (Negative duration).",
+                        "Severity": "CRITICAL"
+                    })
+                elif duration_mins < 3.0: # Less than 3 minutes for a survey is a major red flag
+                    errors.append({
+                        "Question/Field": f"Interview Duration ({col_start} to {col_end})",
+                        "Error Description": f"Rushed Survey Warning: Interview completed in an impossibly short duration ({round(duration_mins, 1)} minutes).",
+                        "Severity": "MAJOR"
+                    })
+            except Exception:
+                pass
+
+        # 2. GPS / Location Overlap Check (Pencil-whipping proof)
+        loc_val = row.get('Location_Key')
+        overlap_num = row.get('Shared_Location_Count', 1)
+        if overlap_num > 1 and pd.notna(loc_val):
+            errors.append({
+                "Question/Field": col_loc if col_loc else "GPS / Location Coordinates",
+                "Error Description": f"Location Overlap Warning: Shares identical location/GPS coordinates with {overlap_num - 1} other family submission(s).",
+                "Severity": "MAJOR"
+            })
+
+        # 3. Logical Inconsistency Check (Age vs Education)
         if col_age and col_edu and pd.notna(row.get(col_age)) and pd.notna(row.get(col_edu)):
             try:
                 age_val = float(row[col_age])
@@ -112,42 +170,46 @@ if raw_data:
                 if age_val > 25 and any(g in edu_str for g in ['grade 1', 'grade 2', 'grade 3', 'grade 4', 'grade 5', 'grade 6', 'elem']):
                     errors.append({
                         "Question/Field": f"{col_age} vs {col_edu}",
-                        "Error Description": f"Logical Contradiction: Age ({int(age_val)} yrs) vs Education ({row[col_edu]})",
+                        "Error Description": f"Logical Contradiction: Age ({int(age_val)} yrs) conflicts with Education Level ({row[col_edu]})",
                         "Severity": "CRITICAL"
                     })
             except ValueError:
                 pass
 
-        # 2. Name Format Check (MAJOR)
-        if col_family and pd.notna(row.get(col_family)):
-            fam_name = str(row[col_family]).strip()
-            if len(fam_name) < 3 or fam_name.isdigit() or re.search(r'[^a-zA-Z\s\.\-]', fam_name):
-                errors.append({
-                    "Question/Field": col_family,
-                    "Error Description": f"Name Format Error / Suspicious Entry: '{fam_name}'",
-                    "Severity": "MAJOR"
-                })
-
-        # 3. Scan for Flagged Remarks / Discrepancies in Form Fields
+        # 4. Exhaustive Question Scrutiny
         for col in row.index:
-            if any(k in col.lower() for k in ['error', 'flag', 'discrepancy', 'remark', 'note', 'comment']):
-                val = row.get(col)
-                if pd.notna(val) and str(val).strip() != "" and str(val).lower() not in ['none', 'no error', 'ok', 'clean', 'n/a']:
+            if col in ['_id', '_uuid', '_submission_time', '_submitted_by', '_source_form', 'Enumerator', 'Role', 'Barangay', 'Municipality', 'Family', 'Location_Key', 'Shared_Location_Count', 'Survey Date']:
+                continue
+            
+            val = row.get(col)
+            col_lower = col.lower()
+            
+            if pd.notna(val) and str(val).strip() != "":
+                val_str = str(val).strip()
+                is_anomaly, anomaly_msg = check_text_anomaly(val_str)
+                if is_anomaly:
                     errors.append({
                         "Question/Field": col,
-                        "Error Description": str(val),
-                        "Severity": "MAJOR" if "error" in col.lower() or "flag" in col.lower() else "MINOR"
+                        "Error Description": anomaly_msg,
+                        "Severity": "CRITICAL"
                     })
+                elif any(k in col_lower for k in ['error', 'flag', 'discrepancy', 'remark', 'note', 'comment', 'issue']):
+                    if val_str.lower() not in ['none', 'no error', 'ok', 'clean', 'n/a', '0', 'false', 'none.']:
+                        errors.append({
+                            "Question/Field": col,
+                            "Error Description": f"Field Flag / Remark Recorded: {val_str}",
+                            "Severity": "MAJOR" if "error" in col_lower or "flag" in col_lower else "MINOR"
+                        })
 
         if not errors:
             return [{
-                "Question/Field": "N/A",
-                "Error Description": "No error detected (Clean)",
+                "Question/Field": "All Fields",
+                "Error Description": "Comprehensive Audit Passed: Clean of duration anomalies, GPS overlaps, and text errors.",
                 "Severity": "CLEAN"
             }]
         return errors
 
-    # Run audit engine across all records
+    # Run audit across all records
     audit_results = []
     for idx, row in df.iterrows():
         row_errors = audit_row_data(row)
@@ -169,89 +231,110 @@ if raw_data:
     audit_df = pd.DataFrame(audit_results)
 
     # -------------------------------------------------------------
-    # TABBED & EXPANDABLE DRILL-DOWN LAYOUT
+    # SIDEBAR: M&E FIELD SCOPE FILTERS FOR STAFF COACHING
+    # -------------------------------------------------------------
+    st.sidebar.header("🔍 Staff Coaching & Inspection Filters")
+    selected_muni = st.sidebar.selectbox("Filter Municipality:", ["All Municipalities"] + sorted(df['Municipality'].dropna().unique().tolist()))
+    selected_brgy = st.sidebar.selectbox("Filter Barangay:", ["All Barangays"] + sorted(df['Barangay'].dropna().unique().tolist()))
+    selected_enum = st.sidebar.selectbox("Filter Enumerator:", ["All Enumerators"] + sorted(df['Enumerator'].dropna().unique().tolist()))
+
+    filtered_audit_df = audit_df.copy()
+    if selected_muni != "All Municipalities":
+        filtered_audit_df = filtered_audit_df[filtered_audit_df["Municipality"] == selected_muni]
+    if selected_brgy != "All Barangays":
+        filtered_audit_df = filtered_audit_df[filtered_audit_df["Barangay"] == selected_brgy]
+    if selected_enum != "All Enumerators":
+        filtered_audit_df = filtered_audit_df[filtered_audit_df["Enumerator"] == selected_enum]
+
+    # -------------------------------------------------------------
+    # DASHBOARD TABS
     # -------------------------------------------------------------
     tab1, tab2, tab3, tab4, tab5 = st.tabs([
-        "📊 Executive Summary", 
-        "🏆 Enumerator Scorecards & Confidence %", 
-        "📅 Daily Survey Productivity", 
-        "🔍 Data Integrity & Question Errors",
-        "🚨 Granular Audit Log"
+        "📊 Daily Productivity & Volume", 
+        "🏛️ Geographic Summaries (Brgy & Muni)", 
+        "🏆 Enumerator Confidence Scorecards", 
+        "🔍 Question Scrutiny & Coaching Proofs",
+        "🚨 Master Audit Trail"
     ])
 
     with tab1:
-        st.markdown("### 📊 Executive Overview & Form Submission Volumes")
-        c1, c2, c3, c4, c5 = st.columns(5)
-        c1.metric("Total Records Extracted", len(df))
-        c2.metric("Critical Errors 🚨", len(audit_df[audit_df["Severity"] == "CRITICAL"]))
-        c3.metric("Major Errors ⚠️", len(audit_df[audit_df["Severity"] == "MAJOR"]))
-        c4.metric("Minor Errors ℹ️", len(audit_df[audit_df["Severity"] == "MINOR"]))
-        c5.metric("Clean Submissions ✅", len(audit_df[audit_df["Severity"] == "CLEAN"]))
+        st.markdown("### 📊 Daily Survey Productivity per Enumerator")
+        st.caption("Day-by-day throughput tracking across field staff and locations.")
+        
+        time_col = "_submission_time" if "_submission_time" in df.columns else None
+        if time_col:
+            df["Survey Date"] = pd.to_datetime(df[time_col]).dt.date
+            prod_df = df.copy()
+            if selected_muni != "All Municipalities": prod_df = prod_df[prod_df["Municipality"] == selected_muni]
+            if selected_brgy != "All Barangays": prod_df = prod_df[prod_df["Barangay"] == selected_brgy]
+            if selected_enum != "All Enumerators": prod_df = prod_df[prod_df["Enumerator"] == selected_enum]
 
-        st.markdown("---")
-        st.markdown("#### Submission Count per FDAF Form")
-        counts_df = pd.DataFrame(list(form_counts.items()), columns=["Form Name", "Total Submissions"])
-        st.dataframe(counts_df, use_container_width=True, hide_index=True)
+            daily_prod = prod_df.groupby(["Municipality", "Barangay", "Enumerator", "Survey Date"]).size().reset_index(name="Surveys Completed")
+            st.dataframe(daily_prod.sort_values(by="Survey Date", ascending=False), use_container_width=True, hide_index=True)
+        else:
+            st.info("Submission timestamps unavailable.")
 
     with tab2:
-        st.markdown("### 🏆 Enumerator Quality, Compliance & Confidence % Scorecards")
-        st.caption("Performance metrics per enumerator with computed confidence percentages and status ratings.")
+        st.markdown("### 🏛️ Geographic Submissions Summary")
+        col_a, col_b = st.columns(2)
+        
+        with col_a:
+            st.markdown("#### Submissions per Municipality")
+            muni_summary = df.groupby("Municipality").size().reset_index(name="Total Surveys")
+            st.dataframe(muni_summary, use_container_width=True, hide_index=True)
 
-        enum_summary = audit_df.groupby(["Municipality", "Barangay", "Role", "Enumerator"]).agg(
+        with col_b:
+            st.markdown("#### Submissions per Barangay")
+            brgy_summary = df.groupby(["Municipality", "Barangay"]).size().reset_index(name="Total Surveys")
+            st.dataframe(brgy_summary, use_container_width=True, hide_index=True)
+
+    with tab3:
+        st.markdown("### 🏆 Enumerator Confidence Level & Quality Scorecards")
+        st.caption("Comprehensive rating per enumerator based on timestamp/duration flaws, GPS overlaps, logic contradictions, and text anomalies.")
+
+        enum_summary = filtered_audit_df.groupby(["Municipality", "Barangay", "Role", "Enumerator"]).agg(
             Total_Surveys=('_id', 'nunique'),
-            Critical_Count=('Severity', lambda x: (x == 'CRITICAL').sum()),
-            Major_Count=('Severity', lambda x: (x == 'MAJOR').sum()),
-            Minor_Count=('Severity', lambda x: (x == 'MINOR').sum())
+            Critical_Errors=('Severity', lambda x: (x == 'CRITICAL').sum()),
+            Major_Errors=('Severity', lambda x: (x == 'MAJOR').sum()),
+            Minor_Errors=('Severity', lambda x: (x == 'MINOR').sum())
         ).reset_index()
 
-        enum_summary['Quality Score (%)'] = ((1 - ((enum_summary['Critical_Count']*2 + enum_summary['Major_Count']) / (enum_summary['Total_Surveys']*2).replace(0, 1))) * 100).clip(0, 100).round(1)
-        enum_summary['Compliance (%)'] = enum_summary['Quality Score (%)']
-        enum_summary['Data Integrity (%)'] = enum_summary['Quality Score (%)']
-        enum_summary['Confidence (%)'] = enum_summary['Quality Score (%)']
-        enum_summary['Confidence Rating'] = enum_summary['Confidence (%)'].apply(lambda s: 'High 🟢' if s >= 85 else ('Moderate 🟡' if s >= 70 else 'Low / Needs Review 🔴'))
+        enum_summary['Confidence (%)'] = ((1 - ((enum_summary['Critical_Errors']*2 + enum_summary['Major_Errors']) / (enum_summary['Total_Surveys']*2).replace(0, 1))) * 100).clip(0, 100).round(1)
+        enum_summary['Confidence Status'] = enum_summary['Confidence (%)'].apply(lambda s: 'High 🟢' if s >= 85 else ('Moderate 🟡' if s >= 70 else 'Low / Needs Review 🔴'))
 
         st.dataframe(
             enum_summary[[
                 "Municipality", "Barangay", "Role", "Enumerator", "Total_Surveys", 
-                "Critical_Count", "Major_Count", "Quality Score (%)", 
-                "Compliance (%)", "Data Integrity (%)", "Confidence (%)", "Confidence Rating"
+                "Critical_Errors", "Major_Errors", "Confidence (%)", "Confidence Status"
             ]].sort_values(by="Confidence (%)", ascending=True),
             use_container_width=True,
             hide_index=True
         )
 
-    with tab3:
-        st.markdown("### 📅 Daily Survey Productivity per Enumerator & Location")
-        st.caption("Day-to-day breakdown of survey volume conducted across Barangays and Municipalities.")
-        
-        time_col = "_submission_time" if "_submission_time" in df.columns else None
-        if time_col:
-            df["Survey Date"] = pd.to_datetime(df[time_col]).dt.date
-            prod_table = df.groupby(["Municipality", "Barangay", "Enumerator", "Survey Date"]).size().reset_index(name="Surveys Completed")
-            st.dataframe(prod_table.sort_values(by="Survey Date", ascending=False), use_container_width=True, hide_index=True)
-        else:
-            st.info("Submission timestamp metadata unavailable.")
-
     with tab4:
-        st.markdown("### 🔍 Question-Level Data Integrity & Error Disaggregation")
-        st.caption("Expand individual survey records to inspect exact question-level errors, descriptions, and responsible enumerators.")
+        st.markdown("### 🔍 Question Scrutiny & Staff Coaching Proofs")
+        st.caption("Use these exact error proofs during staff coaching sessions to review timestamp overlaps, GPS clustering, and question discrepancies with enumerators.")
 
-        for idx, row in audit_df[audit_df["Severity"] != "CLEAN"].iterrows():
-            with st.expander(f"[{row['Severity']}] Form: {row['_source_form']} | Family: {row['Family']} | Enumerator: {row['Enumerator']} ({row['Barangay']}, {row['Municipality']})"):
-                st.write(f"**Question / Field:** `{row['Question/Field']}`")
-                st.write(f"**Error Description:** {row['Error Description']}")
-                st.write(f"**Severity Level:** {row['Severity']}")
-                st.write(f"**Submission Timestamp:** {row['_submission_time']}")
+        flagged_rows = filtered_audit_df[filtered_audit_df["Severity"] != "CLEAN"]
+        if not flagged_rows.empty:
+            for idx, row in flagged_rows.iterrows():
+                with st.expander(f"[{row['Severity']}] Family: {row['Family']} | Enumerator: {row['Enumerator']} ({row['Barangay']}, {row['Municipality']})"):
+                    col_x, col_y = st.columns(2)
+                    col_x.write(f"**Form Source:** {row['_source_form']}")
+                    col_x.write(f"**Question / Field Scrutinized:** `{row['Question/Field']}`")
+                    col_y.write(f"**Severity Level:** {row['Severity']}")
+                    col_y.write(f"**Submission Time:** {row['_submission_time']}")
+                    st.error(f"**Coaching Audit Proof / Description:** {row['Error Description']}")
+        else:
+            st.success("✅ All scrutinized submissions pass time-motion, GPS, and question quality standards within the selected filters!")
 
     with tab5:
-        st.markdown("### 🚨 Granular Audit Log & Full Error Trail")
-        st.caption("Line-item audit trail detailing exact errors, severity levels, questions, families, and responsible enumerators.")
-
-        display_columns = [
-            "Severity", "Question/Field", "Error Description", 
-            "Family", "Enumerator", "Barangay", "Municipality", "_source_form", "_submission_time"
-        ]
-        st.dataframe(audit_df[display_columns], use_container_width=True, hide_index=True)
+        st.markdown("### 🚨 Master Granular Error Audit Trail")
+        st.dataframe(
+            filtered_audit_df[["Severity", "Question/Field", "Error Description", "Family", "Enumerator", "Barangay", "Municipality", "_submission_time"]],
+            use_container_width=True,
+            hide_index=True
+        )
 
 else:
     st.warning("⚠️ No records loaded. Please verify your Kobo token connection.")
