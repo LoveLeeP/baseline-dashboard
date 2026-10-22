@@ -305,47 +305,57 @@ with tab_audit:
     from src.audit import audit_tables
     A = audit_tables(f_flags, f_hh)
     
-    t2 = A["t2"].copy()
+    st.markdown("**Table 1 - Summary of data quality**")
+    show_df(A["t1"], hide_index=True)
     
-    # Merge Enumerator Name, Submission Date, and HH ID into Table 2
-    if not t2.empty and not f_flags.empty:
-        # Join flag records with f_hh survey records to enrich metadata
-        flag_meta = f_flags.merge(
-            f_hh[["uuid", "enumerator_label", "interview_date", "hh_id"]],
+    c1, c2 = st.columns(2)
+    with c1:
+        st.markdown("Common error categories")
+        if "t1_category" in A:
+            show_df(A["t1_category"], hide_index=True)
+    with c2:
+        st.markdown("Most common error types")
+        if "t1_rules" in A:
+            show_df(A["t1_rules"], hide_index=True)
+
+    st.markdown("**Table 2 - Detailed Flagged Submissions Log**")
+    
+    if f_flags.empty:
+        st.info("No flagged submissions match the current filter selection.")
+    else:
+        t2_rich = f_flags.merge(
+            f_hh[["uuid", "interview_date", "municipality_label", "barangay_label", "enumerator_label", "hh_id"]],
             on="uuid",
             how="left"
         )
         
-        # Format interview_date cleanly as YYYY-MM-DD
-        if "interview_date" in flag_meta.columns:
-            flag_meta["Submission Date"] = flag_meta["interview_date"].dt.strftime("%Y-%m-%d")
-        
-        # Standardize column naming
-        flag_meta = flag_meta.rename(columns={
+        t2_rich["Submission Date"] = pd.to_datetime(t2_rich["interview_date"]).dt.strftime("%Y-%m-%d")
+        t2_rich = t2_rich.rename(columns={
+            "municipality_label": "Municipality",
+            "barangay_label": "Barangay",
             "enumerator_label": "Enumerator Name",
-            "hh_id": "Actual HH ID"
+            "hh_id": "Actual HH ID",
+            "severity": "Severity",
+            "category": "Error Category",
+            "rule": "Rule Violated",
+            "detail": "Details"
         })
         
-        # Merge back into t2 using available link keys
-        merge_keys = [k for k in ["uuid", "rule_id", "member_index"] if k in t2.columns and k in flag_meta.columns]
-        if merge_keys:
-            t2 = t2.merge(
-                flag_meta[merge_keys + ["Enumerator Name", "Submission Date", "Actual HH ID"]].drop_duplicates(),
-                on=merge_keys,
-                how="left"
-            )
+        display_cols = [
+            "Submission Date", "Municipality", "Barangay", "Enumerator Name", 
+            "Actual HH ID", "Severity", "Error Category", "Rule Violated", "Details"
+        ]
+        display_cols = [c for c in display_cols if c in t2_rich.columns]
+        t2_display = t2_rich[display_cols].sort_values(["Submission Date", "Municipality"], ascending=[False, True])
+        
+        sev_opts = t2_display["Severity"].dropna().unique().tolist() if "Severity" in t2_display.columns else ["Critical", "Major", "Minor"]
+        sevs = st.multiselect("Filter by Severity", sev_opts, default=[s for s in ["Critical", "Major"] if s in sev_opts], key="aud_sev_rich")
+        
+        if sevs and "Severity" in t2_display.columns:
+            t2_display = t2_display[t2_display["Severity"].isin(sevs)]
             
-            # Re-order columns to place key identification metadata up front
-            front_cols = ["Submission Date", "Enumerator Name", "Actual HH ID"]
-            existing_front = [c for c in front_cols if c in t2.columns]
-            other_cols = [c for c in t2.columns if c not in existing_front]
-            t2 = t2[existing_front + other_cols]
-
-    st.markdown("**Table 1 - Summary of data quality**")
-    show_df(A["t1"], hide_index=True)
-    st.markdown("**Table 2 - Flagged submissions log**")
-    show_df(t2, hide_index=True)
-    download(t2, "audit_flagged_submissions_log")
+        show_df(t2_display, hide_index=True)
+        download(t2_display, "audit_flagged_submissions_log")
 
 # ---------------- confidence ----------------
 with tab_conf:
