@@ -24,9 +24,13 @@ def check_password():
         return True
 
     def password_entered():
-        if hmac.compare_digest(st.session_state["password"], st.secrets.get("password", "")):
+        # Safely fetch password from session state to prevent KeyError during input clearing
+        entered_val = st.session_state.get("password", "")
+        correct_pwd = st.secrets.get("password", "")
+        if hmac.compare_digest(entered_val, correct_pwd):
             st.session_state["password_correct"] = True
-            del st.session_state["password"]
+            if "password" in st.session_state:
+                del st.session_state["password"]
         else:
             st.session_state["password_correct"] = False
 
@@ -34,7 +38,7 @@ def check_password():
         return True
 
     st.text_input("🔒 Enter Password to Access ❤️leep Dashboard", type="password", on_change=password_entered, key="password")
-    if "password_correct" in st.session_state:
+    if st.session_state.get("password_correct") is False:
         st.error("😕 Password incorrect. Please try again.")
     return False
 
@@ -384,7 +388,7 @@ with tab_audit:
             t2_display = t2_display.sort_values(sort_keys, ascending=asc_bools, na_position="last")
         
         sev_opts = t2_display["Severity"].dropna().unique().tolist() if "Severity" in t2_display.columns else ["Critical", "Major", "Minor"]
-        sevs = st.multiselect("Filter by Severity", sev_opts, default=[s for s in ["Critical", "Major"] if s in sev_opts], key="aud_sev_rich_v4")
+        sevs = st.multiselect("Filter by Severity", sev_opts, default=[s for s in ["Critical", "Major"] if s in sev_opts], key="aud_sev_rich_v5")
         
         if sevs and "Severity" in t2_display.columns:
             t2_display = t2_display[t2_display["Severity"].isin(sevs)]
