@@ -12,6 +12,7 @@ import pandas as pd
 T2_COLS = ["Submission ID / _id", "Question Name / Label", "Submitted Value", "Error Category",
            "Flag Reason & Recommended Action", "Severity (High / Medium / Low)"]
 ORDER = {"High": 0, "Medium": 1, "Low": 2}
+DIM_ORDER = ["Completeness", "Validity", "Consistency", "Relevance", "Plausibility", "Uniqueness", "Timeliness", "Integrity"]
 
 
 def audit_tables(flags, hh):
@@ -42,6 +43,15 @@ def audit_tables(flags, hh):
         cat = pd.DataFrame(columns=["Error category", "flags", "rows_affected", "% of rows audited"])
         rules = pd.DataFrame(columns=["Rule", "Common error type", "Severity", "flags", "rows_affected"])
 
+    dim = pd.DataFrame({"Quality dimension": DIM_ORDER})
+    if len(flags) and "audit_dimension" in flags.columns:
+        g = flags.groupby("audit_dimension").agg(flags=("rule_id", "count"), rows_affected=("uuid", "nunique"))
+        dim["flags"] = dim["Quality dimension"].map(g["flags"]).fillna(0).astype(int)
+        dim["rows_affected"] = dim["Quality dimension"].map(g["rows_affected"]).fillna(0).astype(int)
+    else:
+        dim["flags"], dim["rows_affected"] = 0, 0
+    dim["% of rows audited"] = (dim["rows_affected"] / total * 100).round(1) if total else 0.0
+
     if len(flags):
         reason = flags["detail"].astype(str) + flags["member_index"].apply(
             lambda m: f" (member #{int(m)})" if pd.notna(m) else "") + ". Action: " + flags["action"].astype(str)
@@ -56,7 +66,7 @@ def audit_tables(flags, hh):
         t2 = t2.assign(_o=t2["Severity (High / Medium / Low)"].map(ORDER)).sort_values(["_o", "Submission ID / _id"]).drop(columns="_o")
     else:
         t2 = pd.DataFrame(columns=T2_COLS)
-    return {"t1": t1, "t1_category": cat, "t1_rules": rules, "t2": t2.reset_index(drop=True)}
+    return {"t1": t1, "t1_category": cat, "t1_rules": rules, "t1_dimension": dim, "t2": t2.reset_index(drop=True)}
 
 
 def to_markdown(df, max_rows=None):

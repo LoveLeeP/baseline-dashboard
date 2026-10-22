@@ -506,17 +506,28 @@ def mb02(hh, mem, T):
             if pd.notna(r.member_age) and pd.notna(r.age_calc) and abs(r.member_age - r.age_calc) > 1]
 
 
+def _typical_age(st):
+    m = re.match(r"grade_(\d+)$", st)
+    if m:
+        return int(m.group(1)) + 5
+    return {"kindergarten": 5, "day_care": 4}.get(st)
+
+
 @rule("MB03", "Major", "member", "Education", "Age does not fit the grade / schooling level")
 def mb03(hh, mem, T):
     out = []
     for r in mem.itertuples():
         st = s(r.member_schooling_status)
-        if st in AGE_RANGE and pd.notna(r.age_calc):
+        age = r.age_calc if pd.notna(r.age_calc) else r.member_age
+        if st in AGE_RANGE and pd.notna(age):
             lo, hi = AGE_RANGE[st]
-            if not (lo <= r.age_calc <= hi):
-                out.append(F(r.uuid, f"Age {r.age_calc:.0f} is unusual for '{st}'", r.member_index))
-        if st == "not_yet_school_age" and pd.notna(r.age_calc) and r.age_calc >= 7:
-            out.append(F(r.uuid, f"Age {r.age_calc:.0f} but 'not yet school age'", r.member_index))
+            if not (lo <= age <= hi):
+                typ = _typical_age(st)
+                hint = f" (typical age about {typ})" if typ else ""
+                gross = age > hi + 8 or age < lo - 2          # e.g. a 35-year-old in Grade 2 -> Critical
+                out.append(F(r.uuid, f"Age {age:.0f} is unusual for '{st}'{hint}", r.member_index, "Critical" if gross else None))
+        if st == "not_yet_school_age" and pd.notna(age) and age >= 7:
+            out.append(F(r.uuid, f"Age {age:.0f} but 'not yet school age'", r.member_index))
     return out
 
 
@@ -1030,6 +1041,248 @@ def s906(hh, mem, T):
     return out
 
 
+# ================= v2: deeper logic, coherence, location and fabrication checks =================
+DEFAULTS.update({"gps_barangay_radius_km": 10, "gps_municipality_radius_km": 30, "max_travel_kmh": 80, "min_travel_km": 2,
+                 "heaping_share": 0.35, "dob_default_share": 0.15, "income_heaping_share": 0.85, "pace_ratio": 0.5})
+
+ATTAIN_MIN_AGE = {"elem_grad": 11, "jhs_grad": 14, "shs_grad": 16, "tech_voc_grad": 16, "college_undergrad": 16,
+                  "college_grad": 19, "postgrad": 21}
+MB04_HIGH = {"jhs_grad", "shs_grad", "tech_voc_grad", "college_undergrad", "college_grad", "postgrad"}
+NOT_WORKING = {"looking_for_work", "homemaker", "student", "retired", "unable_to_work"}
+REAL_OCC = {"1", "2", "3", "4", "5", "61", "62", "63", "7", "8", "9"}
+AGRI_SOURCES = {"crop_farming", "livestock", "fisheries", "forest_based"}
+
+
+def hav_km(lat1, lon1, lat2, lon2):
+    """Great-circle distance in km (works on numbers or numpy arrays)."""
+    p1, p2 = np.radians(lat1), np.radians(lat2)
+    a = np.sin((p2 - p1) / 2) ** 2 + np.cos(p1) * np.cos(p2) * np.sin(np.radians(lon2 - lon1) / 2) ** 2
+    return 2 * 6371.0 * np.arcsin(np.sqrt(a))
+
+
+@rule("MB22", "Major", "member", "Education", "Age too young for the highest educational attainment recorded")
+def mb22(hh, mem, T):
+    out = []
+    for r in mem.itertuples():
+        ea = s(r.member_educ_attainment)
+        age = r.age_calc if pd.notna(r.age_calc) else r.member_age
+        mn = ATTAIN_MIN_AGE.get(ea)
+        if mn and pd.notna(age) and age < mn:
+            if age < 12 and ea in MB04_HIGH:
+                continue  # already reported by MB04
+            out.append(F(r.uuid, f"Age {age:.0f} but attainment is '{ea}' (normally at least {mn})", r.member_index,
+                         "Critical" if age < mn - 3 else None))
+    return out
+
+
+@rule("MB23", "Major", "member", "Employment", "Occupation inconsistent with employment status")
+def mb23(hh, mem, T):
+    out = []
+    for r in mem.itertuples():
+        occ, es = s(r.member_occupation), s(r.member_employment_status)
+        if es in EMPLOYED and occ == "not_applicable":
+            out.append(F(r.uuid, f"Employment is '{es}' but the occupation is 'Not applicable'", r.member_index))
+        elif es in NOT_WORKING and occ in REAL_OCC:
+            out.append(F(r.uuid, f"Employment is '{es}' but a primary occupation (code {occ}) is recorded", r.member_index, "Minor"))
+    return out
+
+
+@rule("MB24", "Major", "member", "Demographics", "Civil status inconsistent with the spouse listed in the roster")
+def mb24(hh, mem, T):
+    out = []
+    spouses = mem[mem["member_relationship"] == "spouse"].groupby("uuid").size()
+    for u, g in mem.groupby("uuid"):
+        heads = g[g["member_relationship"] == "hh_head"]
+        n_sp = int(spouses.get(u, 0))
+        if len(heads) == 1:
+            h = heads.iloc[0]
+            cs = s(h["member_civil_status"])
+            if n_sp >= 1 and cs in {"single", "widowed", "divorced", "annulled"}:
+                out.append(F(u, f"A spouse is listed but the family head's civil status is '{cs}'", int(h["member_index"])))
+            elif n_sp == 0 and cs in {"married", "living_in"}:
+                out.append(F(u, f"Family head is '{cs}' but no spouse is listed in the roster", int(h["member_index"]), "Minor"))
+        for r in g[g["member_relationship"] == "spouse"].itertuples():
+            if s(r.member_civil_status) in {"widowed", "divorced", "annulled"}:
+                out.append(F(u, f"Spouse recorded with civil status '{r.member_civil_status}'", r.member_index))
+    return out
+
+
+@rule("MB25", "Minor", "member", "Demographics", "Solo-parent status without a child in the household")
+def mb25(hh, mem, T):
+    kids = mem[mem["age_calc"] < 18].groupby("uuid").size()
+    out = []
+    for r in mem.itertuples():
+        if "solo_parent" in toks(r.member_special_status):
+            if pd.notna(r.age_calc) and r.age_calc < 15:
+                out.append(F(r.uuid, f"Age {r.age_calc:.0f} recorded as a solo parent", r.member_index, "Major"))
+            else:
+                others = int(kids.get(r.uuid, 0)) - (1 if pd.notna(r.age_calc) and r.age_calc < 18 else 0)
+                if others <= 0:
+                    out.append(F(r.uuid, "Solo parent but no other member under 18 in the household", r.member_index))
+    return out
+
+
+@rule("MB26", "Minor", "member", "Nutrition", "Lactating without a young child in the household")
+def mb26(hh, mem, T):
+    u3 = mem[mem["age_calc"] < 3].groupby("uuid").size()
+    return [F(r.uuid, "Recorded as lactating but no child under 3 lives in the household", r.member_index)
+            for r in mem.itertuples() if s(r.member_plw_status) in ("lactating", "both") and int(u3.get(r.uuid, 0)) == 0]
+
+
+@rule("MB27", "Minor", "member", "Education", "Learner answers contradict each other (extreme scale answers)")
+def mb27(hh, mem, T):
+    if not {"dropout_risk", "learner_commitment", "attending_regularly"} <= set(mem.columns):
+        return []
+    out = []
+    for r in mem.itertuples():
+        dr, lc, att = s(r.dropout_risk), s(r.learner_commitment), s(r.attending_regularly)
+        if dr == "4" and lc in ("0", "1"):
+            out.append(F(r.uuid, "Dropout 'very unlikely' but the learner is 'not (very) committed' to finishing", r.member_index))
+        elif dr == "0" and lc == "4" and att == "4":
+            out.append(F(r.uuid, "Dropout 'very likely' yet fully committed and attending regularly - please verify", r.member_index))
+    return out
+
+
+@rule("MB28", "Minor", "member", "Employment", "Farming/fishing occupation but no matching family livelihood")
+def mb28(hh, mem, T):
+    src = hh.set_index("uuid")["livelihood_sources"]
+    out = []
+    for r in mem.itertuples():
+        if s(r.member_occupation) in ("61", "62", "63") and r.uuid in src.index:
+            t = toks(src[r.uuid])
+            if t and not (t & AGRI_SOURCES):
+                out.append(F(r.uuid, f"Occupation code {s(r.member_occupation)} (farming/forestry/fishing) but the family livelihood has none of these",
+                             r.member_index))
+    return out
+
+
+@rule("HH22", "Major", "household", "Demographics", "Household counts do not match the roster")
+def hh22(hh, mem, T):
+    cols = ["hh_infant_u2_count", "hh_senior_count", "hh_school_age_count", "hh_school_age_attending_count", "hh_osc_count"]
+    present = [c for c in cols if c in hh.columns]
+    if not present or mem.empty:
+        return []
+    m = mem.copy()
+    a = m["member_age"].where(m["member_age"].notna(), m["age_calc"])
+    st = m["member_schooling_status"].fillna("").astype(str)
+    out_sch = st.isin(["out_of_school", "never_attended"])
+    learner = ~st.isin(["not_yet_school_age", "completed_schooling", ""]) & ~(out_sch & (a > 24))
+    m["u2"], m["sen"], m["sa"] = a < 2, a >= 60, (a >= 5) & (a <= 17)
+    m["att"] = m["sa"] & learner & ~out_sch
+    m["osc"] = (a >= 6) & (a <= 14) & out_sch
+    g = m.groupby("uuid")[["u2", "sen", "sa", "att", "osc"]].sum()
+    pairs = {"hh_infant_u2_count": "u2", "hh_senior_count": "sen", "hh_school_age_count": "sa",
+             "hh_school_age_attending_count": "att", "hh_osc_count": "osc"}
+    out = []
+    for r in hh.itertuples():
+        if r.uuid not in g.index:
+            continue
+        for col in present:
+            stored = num(getattr(r, col))
+            if pd.notna(stored) and int(stored) != int(g.at[r.uuid, pairs[col]]):
+                out.append(F(r.uuid, f"{col}={int(stored)} but {int(g.at[r.uuid, pairs[col]])} recomputed from the roster"))
+    return out
+
+
+@rule("HH23", "Major", "household", "Process", "Section 8 shock answers differ from Section 3 (record may have been edited)")
+def hh23(hh, mem, T):
+    if "hh_shock_risk_resilience_echo" not in hh.columns:
+        return []
+    return [F(r.uuid, "The Section 8 echo of the shock/risk answer is not identical to Section 3")
+            for r in hh.itertuples()
+            if s(r.hh_shock_risk) and s(r.hh_shock_risk_resilience_echo) and toks(r.hh_shock_risk) != toks(r.hh_shock_risk_resilience_echo)]
+
+
+@rule("HH24", "Major", "household", "Housing", "Housing tenure contradicts land tenure")
+def hh24(hh, mem, T):
+    return [F(r.uuid, "Housing is 'informal settler / no consent' but the land is 'owned, titled'")
+            for r in hh.itertuples() if s(r.housing_tenure) == "informal_settler" and s(r.land_tenure) == "owned_titled"]
+
+
+@rule("HH25", "Minor", "household", "Livelihood", "Assets owned do not fit the reported income")
+def hh25(hh, mem, T):
+    out = []
+    for r in hh[hh["consented"]].itertuples():
+        inc, n = r.monthly_income, max(int(r.n_members), 1)
+        big = toks(r.hh_assets_owned) & {"fourwheel_vehicle", "aircon"}
+        if big and pd.notna(inc) and inc / n < T["low_income_per_capita"]:
+            out.append(F(r.uuid, f"Owns {', '.join(sorted(big))} but income is only {inc / n:,.0f} per person per month"))
+    return out
+
+
+@rule("HH26", "Minor", "household", "Livelihood", "4Ps beneficiary with a very high per-person income")
+def hh26(hh, mem, T):
+    if "fourps_beneficiary" not in hh.columns:
+        return []
+    out = []
+    for r in hh[hh["consented"]].itertuples():
+        n = max(int(r.n_members), 1)
+        if s(r.fourps_beneficiary) == "1" and pd.notna(r.monthly_income) and r.monthly_income / n > T["high_income_per_capita"]:
+            out.append(F(r.uuid, f"4Ps beneficiary with income of {r.monthly_income / n:,.0f} per person per month"))
+    return out
+
+
+@rule("HH27", "Major", "household", "Food security", "Nutrition ability contradicts severe food insecurity")
+def hh27(hh, mem, T):
+    out = []
+    for r in hh.itertuples():
+        ab, fi = s(r.family_nutrition_ability), s(r.severe_food_insecurity)
+        if (ab == "4" and fi == "0") or (ab == "0" and fi == "4"):
+            out.append(F(r.uuid, f"Nutrition ability code {ab} (4=always able, 0=not able) vs food-insecurity code {fi} (0=often, 4=never)"))
+    return out
+
+
+@rule("HH28", "Minor", "household", "Process", "Interview spans two calendar days")
+def hh28(hh, mem, T):
+    return [F(r.uuid, f"Started {r.start_dt:%Y-%m-%d %H:%M}, ended {r.end_dt:%Y-%m-%d %H:%M}") for r in hh.itertuples()
+            if pd.notna(r.start_dt) and pd.notna(r.end_dt) and r.start_dt.date() != r.end_dt.date()]
+
+
+@rule("HH29", "Major", "household", "Location", "GPS far from the other surveys of the same barangay / municipality")
+def hh29(hh, mem, T):
+    g = hh[hh["lat"].notna()]
+    out, done = [], set()
+    for keys, min_n, radius, where in ((["municipality", "barangay"], 5, T["gps_barangay_radius_km"], "barangay"),
+                                       (["municipality"], 10, T["gps_municipality_radius_km"], "municipality")):
+        for _, grp in g.groupby(keys):
+            if len(grp) < min_n:
+                continue
+            d = hav_km(grp["lat"].values, grp["lon"].values, grp["lat"].median(), grp["lon"].median())
+            for r, dist in zip(grp.itertuples(), d):
+                if dist > radius and r.uuid not in done:
+                    done.add(r.uuid)
+                    out.append(F(r.uuid, f"GPS is {dist:.0f} km from the typical point of other surveys in this {where} (limit {radius} km)"))
+    return out
+
+
+@rule("SO12", "Major", "household", "Process", "Impossible travel between consecutive interviews of one enumerator")
+def so12(hh, mem, T):
+    out = []
+    g = hh[hh["start_dt"].notna() & hh["lat"].notna()].copy()
+    g = g[g["lat"].between(4.5, 21.5) & g["lon"].between(116, 127)]       # points outside the country are HH14's job
+    if g.empty:
+        return out
+    med = g.groupby("municipality")[["lat", "lon"]].transform("median")
+    g["dmed"] = hav_km(g["lat"].values, g["lon"].values, med["lat"].values, med["lon"].values)
+    g = g.sort_values("start_dt")
+    for _, grp in g.groupby("enumerator_code"):
+        prev = None
+        for r in grp.itertuples():
+            if prev is not None:
+                ref = prev.end_dt if pd.notna(prev.end_dt) else prev.start_dt
+                gap = (r.start_dt - ref).total_seconds() / 60
+                if gap > 0:  # negative gaps (overlaps) are SO09
+                    dist = float(hav_km(prev.lat, prev.lon, r.lat, r.lon))
+                    speed = dist / (max(gap, 1) / 60)
+                    if dist >= T["min_travel_km"] and speed > T["max_travel_kmh"]:
+                        # one of the two points is wrong: blame the one farther from the typical location of its municipality
+                        bad = r if r.dmed >= prev.dmed else prev
+                        out.append(F(bad.uuid, f"{dist:.0f} km between two interviews {gap:.0f} min apart (about {speed:.0f} km/h; "
+                                               f"limit {T['max_travel_kmh']}); this is the one farther from the usual area"))
+            prev = r
+    return out
+
+
 # ================= audit metadata: category, fields shown, recommended action =================
 C_LOGIC, C_TEXT, C_OUT, C_MS = ("Logic & Skip Rule Violations", "Open-Text Quality & Gibberish",
                                 "Outliers & Data Entry Errors", "Multi-Select Conflicts")
@@ -1116,6 +1369,97 @@ META = {
 }
 
 
+META.update({
+ "MB22": (C_LOGIC, ["member_educ_attainment", "member_dob"], "A person this young cannot have finished this level. Check the date of birth and the highest educational attainment; correct whichever is wrong."),
+ "MB23": (C_LOGIC, ["member_occupation", "member_employment_status"], "Occupation and employment status must agree: a working person needs a real occupation, and someone not working should not have a primary occupation. Correct one of them."),
+ "MB24": (C_LOGIC, ["member_civil_status", "member_relationship"], "Civil status and the roster disagree about whether the head has a spouse. Correct the civil status or the relationships (a spouse may be away - note it in the remarks)."),
+ "MB25": (C_LOGIC, ["member_special_status"], "Solo-parent status needs a child to be the parent of. Check the special status and the roster."),
+ "MB26": (C_LOGIC, ["member_plw_status"], "A lactating mother should have an infant or toddler in the household. Check the PLW status and the roster (a child may be missing)."),
+ "MB27": (C_LOGIC, ["dropout_risk", "learner_commitment", "attending_regularly"], "The learner answers sit at opposite extremes. Re-ask the questions and correct the answers if they were mis-tapped."),
+ "MB28": (C_LOGIC, ["member_occupation", "livelihood_sources"], "The member works in farming/forestry/fishing but the family livelihood has no such source. Add the livelihood source or correct the occupation."),
+ "HH22": (C_LOGIC, [], "A household count stored by the form differs from the count recomputed from the roster. The roster or the count was edited; escalate to M&E."),
+ "HH23": (C_LOGIC, ["hh_shock_risk", "hh_shock_risk_resilience_echo"], "Section 8 simply repeats the Section 3 shock/risk answer, so they must be identical. A difference means the record was edited after submission; escalate to M&E."),
+ "HH24": (C_LOGIC, ["housing_tenure", "land_tenure"], "An informal settler does not hold titled land. Correct the housing or land tenure answer."),
+ "HH25": (C_LOGIC, ["hh_assets_owned", "monthly_income"], "Assets such as a four-wheeled vehicle or aircon do not fit this income. Verify the assets and the income with the family."),
+ "HH26": (C_LOGIC, ["fourps_beneficiary", "monthly_income"], "A 4Ps (poor-household) beneficiary with a very high income is unusual. Verify the income and the 4Ps status."),
+ "HH27": (C_LOGIC, ["family_nutrition_ability", "severe_food_insecurity"], "These two food answers contradict each other. Re-ask and correct them."),
+ "HH28": (C_OUT, ["start", "end"], "The interview crossed midnight. Check for a form left open overnight or a wrong device clock."),
+ "HH29": (C_OUT, ["gps_coordinate"], "The GPS point is far from other surveys in the same barangay/municipality. Confirm the interview took place at the family's home."),
+ "SO12": (C_OUT, ["gps_coordinate", "start", "end"], "The enumerator could not travel this distance in the time between interviews. Verify where each interview took place (call the family)."),
+})
+
+# ---- data-quality dimension of every rule (international DQA standard: completeness, validity, consistency, ...) ----
+DIMENSION = {}
+for _ids, _dim in (
+    (["HH12", "SKIP02", "MB19"], "Completeness"),
+    (["HH13", "HH19", "HH20", "MB01", "MB17", "MB20", "TX01", "TX03", "CT01"], "Validity"),
+    (["SKIP01", "MB18"], "Relevance"),
+    (["HH08", "HH21", "LV04", "LV07", "SO02", "HH25", "HH26", "MB25", "MB26", "MB27", "MB28"], "Plausibility"),
+    (["HH01", "SO05", "SO06", "MB16", "TX02", "CT02"], "Uniqueness"),
+    (["HH09", "HH10"], "Timeliness"),
+    (["HH07", "HH14", "HH15", "HH28", "HH29", "SO03", "SO07", "SO08", "SO09", "SO11", "SO12"], "Integrity"),
+):
+    for _i in _ids:
+        DIMENSION[_i] = _dim
+DIM_ORDER = ["Completeness", "Validity", "Consistency", "Relevance", "Plausibility", "Uniqueness", "Timeliness", "Integrity"]
+
+
+def dimension_of(rule_id):
+    return DIMENSION.get(rule_id, "Consistency")   # logic / cross-answer rules are Consistency by default
+
+
+# ---- enumerator-level pattern checks (about an enumerator's whole body of work, not one survey) ----
+PATTERN_COLS = ["enumerator_code", "enumerator_label", "title", "check", "severity", "n", "observed", "expected", "explanation"]
+
+
+def enumerator_patterns(hh, mem, T=None):
+    """Statistical fingerprints of estimated or fabricated data. Not scored per survey; reviewed per enumerator."""
+    T = {**DEFAULTS, **(T or {})}
+    rows = []
+    if hh.empty:
+        return pd.DataFrame(columns=PATTERN_COLS)
+    lab = hh.drop_duplicates("enumerator_code").set_index("enumerator_code")[["enumerator_label", "title"]]
+
+    def add(code, check, sev, n, observed, expected, why):
+        rows.append({"enumerator_code": code, "enumerator_label": lab["enumerator_label"].get(code, code),
+                     "title": lab["title"].get(code, ""), "check": check, "severity": sev, "n": int(n),
+                     "observed": observed, "expected": expected, "explanation": why})
+
+    if len(mem):
+        adults = mem[mem["age_calc"].between(23, 62)]
+        for code, g in adults.groupby("enumerator_code"):
+            if len(g) >= 30:
+                share = float((g["age_calc"].astype(int) % 5 == 0).mean())
+                if share >= T["heaping_share"]:
+                    add(code, "Age heaping", "Minor", len(g), f"{share:.0%} of adult ages end in 0 or 5", "about 20%",
+                        "Ages are rounded far more often than normal: ages may be guessed instead of taken from a document or date of birth.")
+        dobs = mem[mem["dob"].notna()]
+        for code, g in dobs.groupby("enumerator_code"):
+            if len(g) >= 30:
+                share = float(((g["dob"].dt.month == 1) & (g["dob"].dt.day == 1)).mean())
+                if share >= T["dob_default_share"]:
+                    add(code, "Default date of birth (1 January)", "Minor", len(g), f"{share:.0%} born on 1 January", "under 5%",
+                        "Many members share 1 January: a default date is probably being entered when the real date is unknown.")
+    inc = hh[hh["monthly_income"].notna() & (hh["monthly_income"] > 0)]
+    for code, g in inc.groupby("enumerator_code"):
+        if len(g) >= 15:
+            share = float((g["monthly_income"] % 1000 == 0).mean())
+            if share >= T["income_heaping_share"]:
+                add(code, "Income rounding", "Minor", len(g), f"{share:.0%} of incomes are exact multiples of 1,000", "well below 85%",
+                    "Income is almost always rounded: amounts may be estimated rather than reconstructed with the family.")
+    c = hh[hh["consented"] & hh["duration_min"].notna() & (hh["n_members"] > 0)].copy()
+    if len(c):
+        c["per_member"] = c["duration_min"] / c["n_members"]
+        overall = c["per_member"].median()
+        for code, g in c.groupby("enumerator_code"):
+            if len(g) >= 8 and overall > 0 and g["per_member"].median() < T["pace_ratio"] * overall:
+                add(code, "Consistently faster than peers", "Major", len(g),
+                    f"median {g['per_member'].median():.1f} min per member", f"about {overall:.1f} min per member (all enumerators)",
+                    "This enumerator finishes interviews in less than half the usual time per member: questions may be skipped or answers invented.")
+    return pd.DataFrame(rows, columns=PATTERN_COLS)
+
+
+
 def _fmt(v):
     if v is None or (isinstance(v, float) and np.isnan(v)):
         return ""
@@ -1149,6 +1493,7 @@ def _enrich(flags, hh, mem, labels):
         cats.append(cat)
     flags["field"], flags["value"], flags["question"], flags["action"], flags["audit_category"] = fields, values, questions, actions, cats
     flags["audit_severity"] = flags["severity"].map(SEV_AUDIT)
+    flags["audit_dimension"] = flags["rule_id"].map(dimension_of)
     return flags
 
 
@@ -1166,7 +1511,7 @@ def run_checks(hh, mem, cfg=None, labels=None, xlsx_path=None):
                                             "title": "Answer recorded for a question that should have been skipped (tests every skip rule in the form)"},
                                            {"id": "SKIP02", "severity": "Major", "level": "any", "category": "Skip logic",
                                             "title": "Required question left blank although it applies"}])
-    empty_cols = FLAG_COLS + CTX + ["question", "audit_category", "audit_severity"]
+    empty_cols = FLAG_COLS + CTX + ["question", "audit_category", "audit_severity", "audit_dimension"]
     if hh.empty:
         flags = pd.DataFrame(columns=empty_cols)
         integ = pd.DataFrame(columns=["uuid"] + CTX + ["Critical", "Major", "Minor", "integrity_score", "clean"])

@@ -9,10 +9,10 @@ import yaml
 
 from . import demo_data
 from .audit import audit_tables
-from .integrity import run_checks
+from .integrity import DEFAULTS, enumerator_patterns, run_checks
 from .kobo_client import KoboError, classify_project, fetch_with_cache
 from .loader import build_fdaf_tables, load_choice_labels, load_directory, load_item_labels
-from .monitoring import build_monitoring, enumerator_scores
+from .monitoring import build_monitoring, check_monitoring_links, enumerator_scores
 
 BASE = Path(__file__).resolve().parent.parent
 
@@ -130,12 +130,14 @@ def run_pipeline(cfg, demo=False):
     audit = audit_tables(flags, hh)
     mon, items = build_monitoring(mon_raw, cfg, directory, item_labels)
     enum = enumerator_scores(hh, integ, mon, directory, cfg)
+    patterns = enumerator_patterns(hh, mem, {**DEFAULTS, **(cfg.get("thresholds") or {})})
+    mon_links = check_monitoring_links(mon, hh)
 
     daily = (hh.groupby(["interview_date", "enumerator_code", "enumerator_label", "title", "region_label",
                          "province_label", "municipality_label", "barangay_label"])
                .agg(surveys=("uuid", "count"), consented=("consented", "sum")).reset_index())
     return {"hh": hh, "mem": mem, "flags": flags, "integrity": integ, "catalogue": catalogue, "monitoring": mon,
-            "items": items, "enumerators": enum, "daily": daily, "audit": audit, "directory": directory, "truth": truth,
+            "items": items, "enumerators": enum, "daily": daily, "audit": audit, "patterns": patterns, "mon_links": mon_links, "directory": directory, "truth": truth,
             "status": {"source": source, "refreshed_at": datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
                        "fdaf_records": len(fdaf_raw), "monitoring_records": len(mon_raw),
                        "projects": pd.DataFrame(proj_rows)}}

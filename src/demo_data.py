@@ -62,12 +62,16 @@ def _member(rel, sex, age, on, rng, name=None):
     m["member_same_icc"] = "1"
     if st == "completed_schooling":
         m["member_educ_attainment"] = rng.choice(["elem_grad", "jhs_grad", "shs_grad", "college_grad"])
+        if age < 21 and m["member_educ_attainment"] == "college_grad":   # nobody finishes college at 18-20
+            m["member_educ_attainment"] = "shs_grad"
     if st.startswith("grade_") or st in ("kindergarten", "day_care"):
         m.update({"attending_regularly": rng.choice(["4", "4", "3"]), "dropout_risk": rng.choice(["4", "3"]),
                   "has_scholarship": "0"})
     m["member_is_child_u6"] = "1" if age < 6 else "0"
     m["member_is_infant_u2"] = "1" if age < 2 else "0"
     m["member_is_learner"] = "0" if st in ("not_yet_school_age", "completed_schooling") else "1"
+    if m["member_is_learner"] == "1":
+        m["learner_commitment"] = "4"   # required learner question in the real form
     if age >= 15:
         m.update({"member_occupation": rng.choice(["63", "9", "5"]), "member_occupation_other": "Farmer", "member_employment_status": rng.choice(
             ["self_employed", "seasonal", "unpaid_family_worker", "employed_casual"])})
@@ -119,6 +123,7 @@ def _household(rng, code, muni, brgy, day, k, province, region, is_bad, start):
         G + "hh_infant_u2_count": str(sum(1 for m in members if int(m["member_age"]) < 2)),
         G + "hh_has_learners": "1" if any(m["member_is_learner"] == "1" for m in members) else "0",
         G + "hh_supplemental_feeding_eligible_count": "0",
+        G + "hh_shock_risk_resilience_echo": "none_shock", G + "fourps_beneficiary": "0",
         G + "hh_shock_risk": "none_shock", G + "hh_challenges_top3": "income water", G + "hh_assets_owned": "tv radio_audio",
         G + "housing_tenure": "owned", G + "land_tenure": "owned_untitled",
         G + "livelihood_sources": " ".join(src), G + "primary_livelihood": src[0], G + "monthly_income": str(income),
@@ -164,6 +169,10 @@ def _household(rng, code, muni, brgy, day, k, province, region, is_bad, start):
                     G + "farm_hectares": str(round(rng.uniform(0.5, 3), 1)), G + "market_sold_proportion": "2",
                     G + "harvest_food_proportion": "2", G + "harvest_shared_proportion": "1",
                     G + "home_produced_food_types": "vegetables rice_staples", G + "sustainable_practices": "organic_fertilizer"})
+    if not ({"crop_farming", "livestock"} & set(src)):          # farm occupations only where the family farms
+        for m in members:
+            if m.get("member_occupation") in ("61", "62", "63"):
+                m["member_occupation"] = "9"
     rec["hh_members"] = [{("hh_members/" + k_): v for k_, v in m.items()} for m in members]
     return rec
 
@@ -275,17 +284,60 @@ def _inject(rec, rid, rng, pool):
     elif rid == "SKIP01":
         rec[G + "referral_reason"] = "dropout_risk"; rec[G + "immediate_referral_needed"] = "0"; rec[G + "flag_any_urgent"] = "0"
         rec[G + "suggested_priority"] = "low"; rec[G + "family_priority"] = "low"
+    elif rid == "MB22":
+        ms.append(_member("son_daughter", "male", 14, date.fromisoformat(rec["today"]), rng))
+        ms[-1]["member_schooling_status"] = "out_of_school"; ms[-1]["member_educ_attainment"] = "college_grad"
+    elif rid == "MB23":
+        ms[1]["member_employment_status"] = "employed_regular"; ms[1]["member_occupation"] = "not_applicable"
+    elif rid == "MB24":
+        ms[0]["member_civil_status"] = "single"
+    elif rid == "MB25":
+        ms[:] = [m for m in ms if int(m["member_age"]) >= 18]; ms[0]["member_special_status"] = "solo_parent"
+    elif rid == "MB26":
+        ms[:] = [m for m in ms if int(m["member_age"]) >= 3]
+        mom = _member("other_relative", "female", 30, date.fromisoformat(rec["today"]), rng); mom["member_plw_status"] = "lactating"
+        ms.append(mom)
+    elif rid == "MB27":
+        kid = _member("son_daughter", "male", 12, date.fromisoformat(rec["today"]), rng)
+        kid["dropout_risk"] = "4"; kid["learner_commitment"] = "1"; kid["attending_regularly"] = "3"
+        ms.append(kid)
+    elif rid == "MB28":
+        rec[G + "livelihood_sources"] = "small_business"; rec[G + "primary_livelihood"] = "small_business"
+        ms[0]["member_occupation"] = "61"; ms[0]["member_employment_status"] = "self_employed"
+    elif rid == "HH22":
+        ages = [int(m["member_age"]) for m in ms]
+        rec[G + "hh_senior_count"] = str(sum(a >= 60 for a in ages) + 2)
+        rec[G + "hh_school_age_count"] = str(sum(5 <= a <= 17 for a in ages) + 1)
+    elif rid == "HH23":
+        rec[G + "hh_shock_risk"] = "flood_typhoon"; rec[G + "hh_shock_risk_resilience_echo"] = "drought"
+    elif rid == "HH24":
+        rec[G + "housing_tenure"] = "informal_settler"; rec[G + "land_tenure"] = "owned_titled"
+    elif rid == "HH25":
+        rec[G + "hh_assets_owned"] = "fourwheel_vehicle aircon"; rec[G + "monthly_income"] = "2000"
+    elif rid == "HH26":
+        rec[G + "fourps_beneficiary"] = "1"; rec[G + "monthly_income"] = "140000"
+    elif rid == "HH27":
+        rec[G + "family_nutrition_ability"] = "4"; rec[G + "severe_food_insecurity"] = "0"
+    elif rid == "HH28":
+        n0 = datetime.fromisoformat(rec["start"]).replace(hour=23, minute=50)
+        rec["start"] = n0.isoformat(); rec["end"] = (n0 + timedelta(minutes=40)).isoformat()
+    elif rid == "HH29":
+        if not rec.get("gps_coordinate"):
+            return set()
+        lat, lon = [float(x) for x in rec["gps_coordinate"].split()[:2]]
+        rec["gps_coordinate"] = f"{lat + 0.5:.6f} {lon:.6f} 8.0 5.0"; rec["_geolocation"] = [lat + 0.5, lon]
     else:
         return set()
     _set_members(rec, ms)
-    if rid in ("MB07", "MB03", "MB10", "MB05"):
+    if rid in ("MB07", "MB03", "MB10", "MB05", "MB22", "MB25", "MB26", "MB27"):
         rec[G + "hh_size_count"] = str(len(ms))
         rec[G + "hh_child_u6_count"] = str(sum(1 for m in ms if int(m["member_age"]) < 6))
     return {rec["_uuid"]} | partners
 
 
 RULE_IDS = ["MB20", "TX01", "TX03", "CT01", "HH20", "LV12", "MB21", "S901", "S902", "S903", "S904", "S905", "S906", "SKIP01", "MB07", "MB03", "MB10", "MB12", "MB05", "MB04", "HH03", "SO01", "LV01", "LV08", "LV04", "WS01", "HH04",
-            "HH07", "HH14", "HH12", "HH11", "HH01", "HH15", "SO05", "SO03"]
+            "HH07", "HH14", "HH12", "HH11", "HH01", "HH15", "SO05", "SO03",
+            "MB22", "MB23", "MB24", "MB25", "MB26", "MB27", "MB28", "HH22", "HH23", "HH24", "HH25", "HH26", "HH27", "HH28", "HH29"]
 
 
 def generate(labels, directory, monitoring_xlsx, seed=7, days=14):
@@ -362,6 +414,21 @@ def generate(labels, directory, monitoring_xlsx, seed=7, days=14):
         v[1]["start"] = (datetime.fromisoformat(v[0]["start"]) + timedelta(minutes=2)).isoformat()
         v[1]["end"] = (datetime.fromisoformat(v[1]["start"]) + timedelta(minutes=30)).isoformat()
         truth.setdefault("SO09", set()).add(v[1]["_uuid"])
+    # impossible travel: the enumerator's last interview of the day starts 15 min after the previous one ended, ~44 km away
+    taken = set().union(*truth.values())
+    by2 = {}
+    for r in recs:
+        if r["_uuid"] not in taken and r.get("gps_coordinate") and r["informed_consent"] == "1":
+            by2.setdefault((r["enumerator_code"], r["today"]), []).append(r)
+    pairs = [v for v in by2.values() if len(v) >= 2]
+    for v in rng.sample(pairs, min(3, len(pairs))):
+        v.sort(key=lambda r: r["start"])
+        a, b = v[-2], v[-1]
+        b["start"] = (datetime.fromisoformat(a["end"]) + timedelta(minutes=15)).isoformat()
+        b["end"] = (datetime.fromisoformat(b["start"]) + timedelta(minutes=30)).isoformat()
+        lat, lon = [float(x) for x in a["gps_coordinate"].split()[:2]]
+        b["gps_coordinate"] = f"{lat + 0.4:.6f} {lon:.6f} 8.0 5.0"; b["_geolocation"] = [lat + 0.4, lon]
+        truth.setdefault("SO12", set()).add(b["_uuid"])
     return recs, _monitoring(rng, recs, directory, monitoring_xlsx), truth
 
 

@@ -134,8 +134,47 @@ def enumerator_scores(hh, integ, mon, directory, cfg):
     out.loc[capped, "note"] = "Capped to Low: failed a critical monitoring item (consent)"
     prov = (out["monitored"] < min_mon) & out["confidence_score"].notna()
     out.loc[prov, "note"] = (out.loc[prov, "note"] + " Provisional: fewer than " + str(min_mon) + " monitored surveys.").str.strip()
-    
-    # Filter out enumerators with zero submissions to keep metrics and averages accurate
-    out = out[out["surveys"] > 0].reset_index(drop=True)
-    
     return out.sort_values(["confidence_score"], na_position="last").reset_index(drop=True)
+
+
+LINK_COLS = ["monitoring_date", "monitor_label", "enumerator_label", "fdaf_family_id", "issue", "detail", "severity"]
+
+
+def check_monitoring_links(mon, hh):
+    """Back-check: does each monitoring visit point to a real FDAF survey, by the enumerator it names, on the date it names?"""
+    if mon is None or mon.empty or hh.empty:
+        return pd.DataFrame(columns=LINK_COLS)
+    by_id = {}
+    for r in hh.itertuples():
+        by_id.setdefault(str(r.hh_id).strip(), []).append(r)
+    rows = []
+
+    def add(r, issue, detail, sev):
+        rows.append({"monitoring_date": r.monitoring_date, "monitor_label": r.monitor_label, "enumerator_label": r.enumerator_label,
+                     "fdaf_family_id": r.fdaf_family_id, "issue": issue, "detail": detail, "severity": sev})
+
+    for r in mon.itertuples():
+        fid = str(r.fdaf_family_id).strip()
+        if fid in ("", "nan", "None"):
+            add(r, "Family ID missing", "The monitoring record has no FDAF Family ID, so it cannot be tied to a survey.", "Major")
+            continue
+        cands = by_id.get(fid)
+        if not cands:
+            add(r, "Family ID not found in the FDAF data", f"No FDAF survey has Family ID {fid}. Check for a typing error or an unsynced survey.", "Major")
+            continue
+        codes = {c.enumerator_code for c in cands}
+        if str(r.enumerator_monitored) not in codes:
+            who = ", ".join(sorted({str(c.enumerator_label) for c in cands}))
+            add(r, "Monitored enumerator did not conduct this survey",
+                f"The visit says {r.enumerator_label} was monitored, but FDAF survey {fid} was conducted by {who}.", "Critical")
+        else:
+            dates = {pd.Timestamp(c.interview_date).normalize() for c in cands if pd.notna(c.interview_date)}
+            if pd.notna(r.interview_date) and dates and pd.Timestamp(r.interview_date).normalize() not in dates:
+                add(r, "Interview date differs from the FDAF survey",
+                    f"Monitoring says {pd.Timestamp(r.interview_date):%Y-%m-%d}; the FDAF survey is dated "
+                    f"{', '.join(sorted(d.strftime('%Y-%m-%d') for d in dates))}.", "Major")
+        first = min((pd.Timestamp(c.interview_date) for c in cands if pd.notna(c.interview_date)), default=pd.NaT)
+        if pd.notna(r.monitoring_date) and pd.notna(first) and r.monitoring_date < first.normalize():
+            add(r, "Monitoring dated before the interview",
+                f"Monitoring date {r.monitoring_date:%Y-%m-%d} is earlier than the interview date {first:%Y-%m-%d}.", "Major")
+    return pd.DataFrame(rows, columns=LINK_COLS)
