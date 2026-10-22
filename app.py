@@ -113,22 +113,44 @@ if hh.empty:
     st.info("No FDAF submissions yet.")
     st.stop()
 
+# ---------------- cascading sidebar filters ----------------
 dmin, dmax = hh["interview_date"].min().date(), hh["interview_date"].max().date()
 dates = st.sidebar.date_input("Interview dates", (dmin, dmax), min_value=dmin, max_value=dmax)
 d0, d1 = (dates if isinstance(dates, tuple) and len(dates) == 2 else (dmin, dmax))
-titles = st.sidebar.multiselect("Role / title", sorted(hh["title"].dropna().unique()))
-areas = st.sidebar.multiselect("Area (municipality)", sorted(hh["municipality_label"].dropna().unique()))
-brgys = st.sidebar.multiselect("Barangay", sorted(hh["barangay_label"].dropna().unique()))
-people = st.sidebar.multiselect("Enumerator / CF", sorted(hh["enumerator_label"].dropna().unique()))
-forms = st.sidebar.multiselect("Kobo form / project", sorted(hh["source_form"].dropna().unique())) if "source_form" in hh.columns else []
 
-m = hh["interview_date"].between(pd.Timestamp(d0), pd.Timestamp(d1))
-if titles: m &= hh["title"].isin(titles)
-if areas: m &= hh["municipality_label"].isin(areas)
-if brgys: m &= hh["barangay_label"].isin(brgys)
-if people: m &= hh["enumerator_label"].isin(people)
-if forms: m &= hh["source_form"].isin(forms)
-f_hh = hh[m]
+# Start filtering from date range
+df_filtered = hh[hh["interview_date"].dt.date.between(d0, d1)].copy()
+
+# 1. Municipality filter
+all_areas = sorted(df_filtered["municipality_label"].dropna().unique())
+areas = st.sidebar.multiselect("Area (municipality)", all_areas)
+if areas:
+    df_filtered = df_filtered[df_filtered["municipality_label"].isin(areas)]
+
+# 2. Barangay filter (automatically narrows based on selected municipality)
+all_brgys = sorted(df_filtered["barangay_label"].dropna().unique())
+brgys = st.sidebar.multiselect("Barangay", all_brgys)
+if brgys:
+    df_filtered = df_filtered[df_filtered["barangay_label"].isin(brgys)]
+
+# 3. Enumerator / CF filter (automatically narrows based on municipality & barangay)
+all_people = sorted(df_filtered["enumerator_label"].dropna().unique())
+people = st.sidebar.multiselect("Enumerator / CF", all_people)
+if people:
+    df_filtered = df_filtered[df_filtered["enumerator_label"].isin(people)]
+
+# 4. Secondary filters
+titles = st.sidebar.multiselect("Role / title", sorted(hh["title"].dropna().unique()))
+if titles:
+    df_filtered = df_filtered[df_filtered["title"].isin(titles)]
+
+forms = st.sidebar.multiselect("Kobo form / project", sorted(hh["source_form"].dropna().unique())) if "source_form" in hh.columns else []
+if forms and "source_form" in hh.columns:
+    df_filtered = df_filtered[df_filtered["source_form"].isin(forms)]
+
+f_hh = df_filtered
+
+# Downstream ID masks for integrity, flags, and monitoring tables
 ids = set(f_hh["uuid"])
 f_int = integ[integ["uuid"].isin(ids)]
 f_flags = flags[flags["uuid"].isin(ids)]
@@ -293,113 +315,4 @@ with tab_mon:
         show_df(vis.sort_values("monitoring_date", ascending=False), hide_index=True)
 
     ml = D.get("mon_links")
-    if ml is not None and len(ml):
-        any_filter = bool(titles or areas or brgys or people or forms)
-        view = ml[ml["enumerator_label"].isin(set(f_hh["enumerator_label"])) | (not any_filter)]
-        view = view[view["monitoring_date"].between(pd.Timestamp(d0), pd.Timestamp(d1)) | view["monitoring_date"].isna()]
-        st.markdown("**Monitoring visits that do not match the FDAF data** (Family ID not found, wrong enumerator, or date differs)")
-        if len(view):
-            show_df(view.sort_values("monitoring_date", ascending=False), hide_index=True)
-            download(view, "monitoring_link_issues")
-        else:
-            st.caption("Every monitoring visit in view matches an FDAF survey.")
-
-# ---------------- integrity ----------------
-with tab_int:
-    st.subheader("Data integrity - answer consistency checks")
-    st.caption("Each rule compares answers that should agree (e.g. age vs grade, livelihood vs income). "
-               "Flags show the Family ID and member number only.")
-    c = st.columns(5)
-    c[0].metric("Surveys checked", len(f_int))
-    c[1].metric("Critical flags", int(f_int["Critical"].sum()))
-    c[2].metric("Major flags", int(f_int["Major"].sum()))
-    c[3].metric("Minor flags", int(f_int["Minor"].sum()))
-    c[4].metric("Avg integrity score", f"{f_int['integrity_score'].mean():.1f}" if len(f_int) else "-")
-    left, right = st.columns(2)
-    with left:
-        st.markdown("**Flags by rule**")
-        byrule = f_flags.groupby(["rule_id", "rule", "severity"]).size().rename("flags").reset_index().sort_values("flags", ascending=False)
-        show_df(style_cells(byrule, "severity", SEV_COLORS), hide_index=True)
-    with right:
-        st.markdown("**Flags by enumerator**")
-        byenum = f_int.groupby("enumerator_label").agg(surveys=("uuid", "count"), Critical=("Critical", "sum"), Major=("Major", "sum"),
-                                                      Minor=("Minor", "sum"), integrity_score=("integrity_score", "mean"),
-                                                      clean_rate=("clean", "mean")).reset_index()
-        byenum["clean_rate"] = (byenum["clean_rate"] * 100).round(0)
-        show_df(byenum.sort_values("integrity_score").round(1), hide_index=True)
-    pat = D.get("patterns")
-    st.markdown("**Enumerator pattern checks** - statistical signs of guessed or invented data. Review with the enumerator; "
-                "these are not counted in the survey scores.")
-    if pat is not None and len(pat):
-        show_df(pat[pat["enumerator_code"].isin(codes)].drop(columns=["enumerator_code"]), hide_index=True)
-    else:
-        st.caption("No enumerator pattern warnings.")
-    st.markdown("**Flag details**")
-    sev = st.multiselect("Severity", ["Critical", "Major", "Minor"], default=["Critical", "Major"])
-    cats = st.multiselect("Category", sorted(f_flags["category"].dropna().unique()))
-    fl = f_flags[f_flags["severity"].isin(sev)]
-    if cats:
-        fl = fl[fl["category"].isin(cats)]
-    show = fl[["interview_date", "hh_id", "enumerator_label", "municipality_label", "barangay_label", "rule_id", "severity",
-               "member_index", "detail"]].sort_values(["interview_date", "hh_id"], ascending=[False, True])
-    show_df(show, hide_index=True)
-    download(show, "integrity_flags")
-
-# ---------------- audit log ----------------
-with tab_audit:
-    st.subheader("Data quality audit")
-    from src.audit import audit_tables  # noqa: E402
-    A = audit_tables(f_flags, f_hh)
-    st.markdown("**Table 1 - Summary of data quality**")
-    show_df(A["t1"], hide_index=True)
-    c1, c2 = st.columns(2)
-    with c1:
-        st.markdown("Common error categories")
-        show_df(A["t1_category"], hide_index=True)
-    with c2:
-        st.markdown("Most common error types")
-        show_df(A["t1_rules"], hide_index=True)
-    if "t1_dimension" in A:
-        st.markdown("Data-quality dimensions (completeness, validity, consistency, relevance, plausibility, uniqueness, timeliness, integrity)")
-        show_df(A["t1_dimension"], hide_index=True)
-    st.markdown("**Table 2 - Flagged submissions log**")
-    sevs = st.multiselect("Severity (High = Critical, Medium = Major, Low = Minor)", ["High", "Medium", "Low"], default=["High", "Medium"], key="aud_sev")
-    cat_opts = sorted(A["t2"]["Error Category"].dropna().unique()) if len(A["t2"]) else []
-    cats2 = st.multiselect("Error category", cat_opts, key="aud_cat")
-    t2 = A["t2"]
-    t2 = t2[t2["Severity (High / Medium / Low)"].isin(sevs)]
-    if cats2:
-        t2 = t2[t2["Error Category"].isin(cats2)]
-    show_df(t2, hide_index=True)
-    download(t2, "audit_flagged_submissions_log")
-
-# ---------------- confidence ----------------
-with tab_conf:
-    st.subheader("Enumerator / CF confidence level")
-    w = cfg["confidence"]
-    st.caption(f"Confidence score = {w['weight_monitoring']:.0%} monitoring score + {w['weight_integrity']:.0%} data-integrity score. "
-               f"High >= {w['high_min']}, Medium >= {w['medium_min']}, otherwise Low. "
-               "A failed consent item caps the level at Low. Fewer than "
-               f"{cfg['monitoring']['min_monitored_surveys']} monitored surveys = provisional.")
-    cols = ["enumerator_label", "title", "home_area", "surveys", "monitored", "monitoring_score", "integrity_score", "clean_rate",
-            "critical_flags", "major_flags", "confidence_score", "confidence_level", "basis", "note"]
-    ct = f_enum[cols].copy()
-    show_df(style_cells(ct.round(1), "confidence_level", LEVEL_COLORS), hide_index=True)
-    download(ct, "enumerator_confidence")
-
-# ---------------- status ----------------
-with tab_status:
-    s = D["status"]
-    st.write(f"**Source:** {s['source']}")
-    st.write(f"**Last refreshed:** {s['refreshed_at']}  (the dashboard re-pulls from Kobo every {cfg.get('cache_minutes', 10)} minutes, "
-             "or when you press *Refresh now*)")
-    st.write(f"**FDAF submissions:** {s['fdaf_records']:,}  |  **Monitoring submissions:** {s['monitoring_records']:,}")
-    proj = s.get("projects")
-    if proj is not None and len(proj):
-        st.markdown("**Kobo projects connected**")
-        show_df(proj, hide_index=True)
-        if proj["status"].astype(str).str.startswith("ERROR").any():
-            st.warning("At least one project could not be loaded - see the status column. "
-                       "The others are still shown.")
-    st.markdown("**Accuracy rules in use**")
-    show_df(D["catalogue"], hide_index=True)
+    if ml
