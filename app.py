@@ -304,11 +304,48 @@ with tab_audit:
     st.subheader("Data quality audit")
     from src.audit import audit_tables
     A = audit_tables(f_flags, f_hh)
+    
+    t2 = A["t2"].copy()
+    
+    # Merge Enumerator Name, Submission Date, and HH ID into Table 2
+    if not t2.empty and not f_flags.empty:
+        # Join flag records with f_hh survey records to enrich metadata
+        flag_meta = f_flags.merge(
+            f_hh[["uuid", "enumerator_label", "interview_date", "hh_id"]],
+            on="uuid",
+            how="left"
+        )
+        
+        # Format interview_date cleanly as YYYY-MM-DD
+        if "interview_date" in flag_meta.columns:
+            flag_meta["Submission Date"] = flag_meta["interview_date"].dt.strftime("%Y-%m-%d")
+        
+        # Standardize column naming
+        flag_meta = flag_meta.rename(columns={
+            "enumerator_label": "Enumerator Name",
+            "hh_id": "Actual HH ID"
+        })
+        
+        # Merge back into t2 using available link keys
+        merge_keys = [k for k in ["uuid", "rule_id", "member_index"] if k in t2.columns and k in flag_meta.columns]
+        if merge_keys:
+            t2 = t2.merge(
+                flag_meta[merge_keys + ["Enumerator Name", "Submission Date", "Actual HH ID"]].drop_duplicates(),
+                on=merge_keys,
+                how="left"
+            )
+            
+            # Re-order columns to place key identification metadata up front
+            front_cols = ["Submission Date", "Enumerator Name", "Actual HH ID"]
+            existing_front = [c for c in front_cols if c in t2.columns]
+            other_cols = [c for c in t2.columns if c not in existing_front]
+            t2 = t2[existing_front + other_cols]
+
     st.markdown("**Table 1 - Summary of data quality**")
     show_df(A["t1"], hide_index=True)
     st.markdown("**Table 2 - Flagged submissions log**")
-    show_df(A["t2"], hide_index=True)
-    download(A["t2"], "audit_flagged_submissions_log")
+    show_df(t2, hide_index=True)
+    download(t2, "audit_flagged_submissions_log")
 
 # ---------------- confidence ----------------
 with tab_conf:
