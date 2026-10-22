@@ -361,7 +361,8 @@ with tab_audit:
         else:
             sort_keys = [k for k in ["Submission Date", "Municipality"] if k in t2_rich.columns]
             if sort_keys:
-                t2_display = t2_rich[display_cols].sort_values(sort_keys, ascending=[False, True])
+                asc_bools = [False if k == "Submission Date" else True for k in sort_keys]
+                t2_display = t2_rich[display_cols].sort_values(sort_keys, ascending=asc_bools)
             else:
                 t2_display = t2_rich[display_cols]
         
