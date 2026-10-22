@@ -323,51 +323,68 @@ with tab_audit:
     if f_flags.empty:
         st.info("No flagged submissions match the current filter selection.")
     else:
-        hh_cols = ["uuid"]
-        for col in ["interview_date", "municipality_label", "barangay_label", "enumerator_label", "hh_id"]:
-            if col in f_hh.columns:
-                hh_cols.append(col)
-                
-        if "uuid" in f_flags.columns and "uuid" in f_hh.columns:
-            t2_rich = f_flags.merge(f_hh[hh_cols], on="uuid", how="left")
-        else:
-            t2_rich = f_flags.copy()
+        t2_rich = f_flags.copy()
+        
+        # Normalize UUIDs for clean joining across dataframes
+        if "uuid" in t2_rich.columns and "uuid" in f_hh.columns:
+            t2_rich["_join_uuid"] = t2_rich["uuid"].astype(str).str.strip()
+            f_hh_temp = f_hh.copy()
+            f_hh_temp["_join_uuid"] = f_hh_temp["uuid"].astype(str).str.strip()
             
-        if "interview_date" in t2_rich.columns:
-            t2_rich["Submission Date"] = pd.to_datetime(t2_rich["interview_date"], errors="coerce").dt.strftime("%Y-%m-%d")
+            possible_meta = [
+                "_join_uuid", "interview_date", "submission_date", 
+                "municipality_label", "municipality", 
+                "barangay_label", "barangay", 
+                "enumerator_label", "enumerator", "enumerator_name", 
+                "hh_id", "household_id"
+            ]
+            meta_cols = [c for c in possible_meta if c in f_hh_temp.columns]
+            t2_rich = t2_rich.merge(f_hh_temp[meta_cols].drop_duplicates(subset=["_join_uuid"]), on="_join_uuid", how="left")
+
+        # Parse submission date safely
+        date_col = next((c for c in ["interview_date", "submission_date", "date"] if c in t2_rich.columns), None)
+        if date_col:
+            t2_rich["Submission Date"] = pd.to_datetime(t2_rich[date_col], errors="coerce").dt.strftime("%Y-%m-%d")
         else:
             t2_rich["Submission Date"] = "N/A"
             
+        # Flexible column mapping
         rename_map = {}
-        if "municipality_label" in t2_rich.columns: rename_map["municipality_label"] = "Municipality"
-        if "barangay_label" in t2_rich.columns: rename_map["barangay_label"] = "Barangay"
-        if "enumerator_label" in t2_rich.columns: rename_map["enumerator_label"] = "Enumerator Name"
-        if "hh_id" in t2_rich.columns: rename_map["hh_id"] = "Actual HH ID"
-        if "severity" in t2_rich.columns: rename_map["severity"] = "Severity"
-        if "category" in t2_rich.columns: rename_map["category"] = "Error Category"
-        if "rule" in t2_rich.columns: rename_map["rule"] = "Rule Violated"
-        if "detail" in t2_rich.columns: rename_map["detail"] = "Details"
-        
+        for src, target in [
+            ("municipality_label", "Municipality"), ("municipality", "Municipality"),
+            ("barangay_label", "Barangay"), ("barangay", "Barangay"),
+            ("enumerator_label", "Enumerator Name"), ("enumerator", "Enumerator Name"), ("enumerator_name", "Enumerator Name"),
+            ("hh_id", "Actual HH ID"), ("household_id", "Actual HH ID"),
+            ("severity", "Severity"),
+            ("category", "Error Category"),
+            ("rule", "Rule Violated"),
+            ("detail", "Specific Details"),
+            ("details", "Specific Details"),
+            ("description", "Description")
+        ]:
+            if src in t2_rich.columns and target not in rename_map.values():
+                rename_map[src] = target
+                
         t2_rich = t2_rich.rename(columns=rename_map)
         
         display_cols = [
             "Submission Date", "Municipality", "Barangay", "Enumerator Name", 
-            "Actual HH ID", "Severity", "Error Category", "Rule Violated", "Details"
+            "Actual HH ID", "Severity", "Error Category", "Rule Violated", "Specific Details", "Description"
         ]
         display_cols = [c for c in display_cols if c in t2_rich.columns]
         
-        if not display_cols:
-            t2_display = t2_rich
-        else:
-            sort_keys = [k for k in ["Submission Date", "Municipality"] if k in t2_rich.columns]
-            if sort_keys:
-                asc_bools = [False if k == "Submission Date" else True for k in sort_keys]
-                t2_display = t2_rich[display_cols].sort_values(sort_keys, ascending=asc_bools)
-            else:
-                t2_display = t2_rich[display_cols]
+        for col in t2_rich.columns:
+            if col not in display_cols and col not in ["_join_uuid", "uuid", "interview_date", "submission_date"]:
+                display_cols.append(col)
+                
+        t2_display = t2_rich[display_cols]
+        sort_keys = [k for k in ["Submission Date", "Municipality"] if k in t2_display.columns]
+        if sort_keys:
+            asc_bools = [False if k == "Submission Date" else True for k in sort_keys]
+            t2_display = t2_display.sort_values(sort_keys, ascending=asc_bools, na_position="last")
         
         sev_opts = t2_display["Severity"].dropna().unique().tolist() if "Severity" in t2_display.columns else ["Critical", "Major", "Minor"]
-        sevs = st.multiselect("Filter by Severity", sev_opts, default=[s for s in ["Critical", "Major"] if s in sev_opts], key="aud_sev_rich")
+        sevs = st.multiselect("Filter by Severity", sev_opts, default=[s for s in ["Critical", "Major"] if s in sev_opts], key="aud_sev_rich_v4")
         
         if sevs and "Severity" in t2_display.columns:
             t2_display = t2_display[t2_display["Severity"].isin(sevs)]
