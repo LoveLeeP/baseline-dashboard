@@ -93,6 +93,8 @@ def main():
     print(to_markdown(A["t1_category"]))
     print("\nMost common error types\n")
     print(to_markdown(A["t1_rules"]))
+    print("\nData-quality dimensions\n")
+    print(to_markdown(A["t1_dimension"]))
     print(f"\n## Table 2: Flagged Submissions Log (first {a.rows} of {len(A['t2'])})\n")
     print(to_markdown(A["t2"], a.rows))
 
@@ -102,6 +104,7 @@ def main():
         A["t1"].to_excel(w, sheet_name="Table 1 Summary", index=False)
         A["t1_category"].to_excel(w, sheet_name="Table 1 Categories", index=False)
         A["t1_rules"].to_excel(w, sheet_name="Table 1 Error types", index=False)
+        A["t1_dimension"].to_excel(w, sheet_name="Table 1 Dimensions", index=False)
         A["t2"].to_excel(w, sheet_name="Table 2 Flag log", index=False)
         for ws in w.sheets.values():
             ws.freeze_panes = "A2"

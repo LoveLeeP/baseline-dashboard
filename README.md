@@ -2,10 +2,11 @@
 
 Pulls data from KoboToolbox and shows, in one dashboard:
 
-1. **Daily surveys** by enumerator/CF, role (title), area (region, province, municipality, barangay).
+1. **Daily surveys** by enumerator/CF, role (title), area (region, province, municipality, barangay), with the number of surveys per enumerator per day and totals per municipality, barangay, day and overall.
 2. **Quality & compliance monitoring** scores (per enumerator, per section, per question), from the monitoring form.
-3. **Accuracy / data-integrity checker** - 78 automated checks (see `RULES.md`) that test the FDAF for: skip-rule violations (it reads the form's own skip logic and tests every answer against it), contradictions between related answers, member and respondent **name format** ("Last Name, First Name, Middle Name"), gibberish / test / copy-pasted text, outliers and data-entry errors (ages, dates, income, GPS, contact numbers, interview times), straight-lining, multi-select conflicts, and whether the **Section 9 assessment and referral** follow from the system score and flags. Results appear as **Table 1 (summary)** and **Table 2 (flagged-submissions log)**.
+3. **Accuracy / data-integrity checker** - 94 automated checks (see `RULES.md`) that test the FDAF for: skip-rule violations (it reads the form's own skip logic and tests every answer against it), contradictions between related answers, member and respondent **name format** ("Last Name, First Name, Middle Name"), gibberish / test / copy-pasted text, outliers and data-entry errors (ages, dates, income, GPS, contact numbers, interview times), straight-lining, multi-select conflicts, and whether the **Section 9 assessment and referral** follow from the system score and flags. Results appear as **Table 1 (summary)** and **Table 2 (flagged-submissions log)**.
 4. **Enumerator confidence level** (High / Medium / Low) combining monitoring and integrity scores.
+5. **Deeper logic and fabrication checks** (new): age vs grade with graded severity (an adult in Grade 2 is Critical), attainment vs age, civil status vs spouse, occupation vs employment, roster-derived counts vs stored counts, edited records, GPS far from the barangay, impossible travel between interviews, enumerator pattern warnings (age/DOB/income rounding, unusually fast interviews), a monitoring back-check against the FDAF data, and a **data-quality dimension scorecard** (completeness, validity, consistency, relevance, plausibility, uniqueness, timeliness, integrity).
 
 Everything refreshes automatically: the dashboard re-pulls from Kobo every 10 minutes (`cache_minutes` in `config.yaml`).
 
@@ -63,6 +64,7 @@ Flags show the Family ID and member number, never family or respondent names. Th
 ## 7. Tests
 `python -m tests.test_pipeline` - builds fake submissions with planted errors and confirms every one is caught.
 `python -m tests.test_rules_unit` - unit tests for the name-format and gibberish detectors.
+`python -m tests.test_new_rules` - age-vs-grade (35 in Grade 2), attainment, civil-status, roster-count, pattern and monitoring-link tests, plus a zero-false-positive check on clean data.
 `python -m tests.test_export_cli` - audits a fake Kobo export file end to end.
 `python -m tests.test_app_smoke` - runs the dashboard code against a stubbed Streamlit to catch runtime errors.
 `python -m tests.test_multi_project` - mocked Kobo API with several projects, typed enumerator names and a wrong UID.
