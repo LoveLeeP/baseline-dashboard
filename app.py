@@ -323,30 +323,47 @@ with tab_audit:
     if f_flags.empty:
         st.info("No flagged submissions match the current filter selection.")
     else:
-        t2_rich = f_flags.merge(
-            f_hh[["uuid", "interview_date", "municipality_label", "barangay_label", "enumerator_label", "hh_id"]],
-            on="uuid",
-            how="left"
-        )
+        hh_cols = ["uuid"]
+        for col in ["interview_date", "municipality_label", "barangay_label", "enumerator_label", "hh_id"]:
+            if col in f_hh.columns:
+                hh_cols.append(col)
+                
+        if "uuid" in f_flags.columns and "uuid" in f_hh.columns:
+            t2_rich = f_flags.merge(f_hh[hh_cols], on="uuid", how="left")
+        else:
+            t2_rich = f_flags.copy()
+            
+        if "interview_date" in t2_rich.columns:
+            t2_rich["Submission Date"] = pd.to_datetime(t2_rich["interview_date"], errors="coerce").dt.strftime("%Y-%m-%d")
+        else:
+            t2_rich["Submission Date"] = "N/A"
+            
+        rename_map = {}
+        if "municipality_label" in t2_rich.columns: rename_map["municipality_label"] = "Municipality"
+        if "barangay_label" in t2_rich.columns: rename_map["barangay_label"] = "Barangay"
+        if "enumerator_label" in t2_rich.columns: rename_map["enumerator_label"] = "Enumerator Name"
+        if "hh_id" in t2_rich.columns: rename_map["hh_id"] = "Actual HH ID"
+        if "severity" in t2_rich.columns: rename_map["severity"] = "Severity"
+        if "category" in t2_rich.columns: rename_map["category"] = "Error Category"
+        if "rule" in t2_rich.columns: rename_map["rule"] = "Rule Violated"
+        if "detail" in t2_rich.columns: rename_map["detail"] = "Details"
         
-        t2_rich["Submission Date"] = pd.to_datetime(t2_rich["interview_date"]).dt.strftime("%Y-%m-%d")
-        t2_rich = t2_rich.rename(columns={
-            "municipality_label": "Municipality",
-            "barangay_label": "Barangay",
-            "enumerator_label": "Enumerator Name",
-            "hh_id": "Actual HH ID",
-            "severity": "Severity",
-            "category": "Error Category",
-            "rule": "Rule Violated",
-            "detail": "Details"
-        })
+        t2_rich = t2_rich.rename(columns=rename_map)
         
         display_cols = [
             "Submission Date", "Municipality", "Barangay", "Enumerator Name", 
             "Actual HH ID", "Severity", "Error Category", "Rule Violated", "Details"
         ]
         display_cols = [c for c in display_cols if c in t2_rich.columns]
-        t2_display = t2_rich[display_cols].sort_values(["Submission Date", "Municipality"], ascending=[False, True])
+        
+        if not display_cols:
+            t2_display = t2_rich
+        else:
+            sort_keys = [k for k in ["Submission Date", "Municipality"] if k in t2_rich.columns]
+            if sort_keys:
+                t2_display = t2_rich[display_cols].sort_values(sort_keys, ascending=[False, True])
+            else:
+                t2_display = t2_rich[display_cols]
         
         sev_opts = t2_display["Severity"].dropna().unique().tolist() if "Severity" in t2_display.columns else ["Critical", "Major", "Minor"]
         sevs = st.multiselect("Filter by Severity", sev_opts, default=[s for s in ["Critical", "Major"] if s in sev_opts], key="aud_sev_rich")
