@@ -1,4 +1,5 @@
 """FDAF Monitoring Dashboard  -  run with:  streamlit run app.py"""
+import io
 import sys
 from pathlib import Path
 
@@ -74,7 +75,25 @@ def score_style(df, cols):
 
 
 def download(df, name):
-    st.download_button(f"Download {name}.csv", df.to_csv(index=False).encode("utf-8-sig"), f"{name}.csv", "text/csv")
+    """Provides side-by-side buttons for CSV and Excel exports."""
+    c1, c2 = st.columns(2)
+    with c1:
+        st.download_button(
+            f"📄 Download {name}.csv",
+            df.to_csv(index=False).encode("utf-8-sig"),
+            f"{name}.csv",
+            "text/csv"
+        )
+    with c2:
+        output = io.BytesIO()
+        with pd.ExcelWriter(output, engine="openpyxl") as writer:
+            df.to_excel(writer, index=False, sheet_name="Data")
+        st.download_button(
+            f"📊 Download {name}.xlsx",
+            output.getvalue(),
+            f"{name}.xlsx",
+            "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
+        )
 
 
 # ---------------- sidebar ----------------
@@ -114,25 +133,30 @@ d0, d1 = (dates if isinstance(dates, tuple) and len(dates) == 2 else (dmin, dmax
 
 df_filtered = hh[hh["interview_date"].dt.date.between(d0, d1)].copy()
 
+# 1. Area (Municipality)
 all_areas = sorted(df_filtered["municipality_label"].dropna().unique())
 areas = st.sidebar.multiselect("Area (municipality)", all_areas)
 if areas:
     df_filtered = df_filtered[df_filtered["municipality_label"].isin(areas)]
 
+# 2. Barangay (Cascades from Municipality)
 all_brgys = sorted(df_filtered["barangay_label"].dropna().unique())
 brgys = st.sidebar.multiselect("Barangay", all_brgys)
 if brgys:
     df_filtered = df_filtered[df_filtered["barangay_label"].isin(brgys)]
 
+# 3. Enumerator / CF (Cascades from Municipality & Barangay)
 all_people = sorted(df_filtered["enumerator_label"].dropna().unique())
 people = st.sidebar.multiselect("Enumerator / CF", all_people)
 if people:
     df_filtered = df_filtered[df_filtered["enumerator_label"].isin(people)]
 
+# Role / Title
 titles = st.sidebar.multiselect("Role / title", sorted(hh["title"].dropna().unique()))
 if titles:
     df_filtered = df_filtered[df_filtered["title"].isin(titles)]
 
+# Kobo Form / Project
 forms = st.sidebar.multiselect("Kobo form / project", sorted(hh["source_form"].dropna().unique())) if "source_form" in hh.columns else []
 if forms and "source_form" in hh.columns:
     df_filtered = df_filtered[df_filtered["source_form"].isin(forms)]
@@ -284,6 +308,7 @@ with tab_audit:
     show_df(A["t1"], hide_index=True)
     st.markdown("**Table 2 - Flagged submissions log**")
     show_df(A["t2"], hide_index=True)
+    download(A["t2"], "audit_flagged_submissions_log")
 
 # ---------------- confidence ----------------
 with tab_conf:
@@ -293,6 +318,7 @@ with tab_conf:
             "critical_flags", "major_flags", "confidence_score", "confidence_level", "basis", "note"]
     ct = f_enum[cols].copy()
     show_df(style_cells(ct.round(1), "confidence_level", LEVEL_COLORS), hide_index=True)
+    download(ct, "enumerator_confidence")
 
 # ---------------- status ----------------
 with tab_status:
