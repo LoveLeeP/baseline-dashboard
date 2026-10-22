@@ -19,12 +19,12 @@ def check_password():
     """Returns `True` if the user entered the correct password or passed it via URL."""
     # Allows auto-login if the password is in the URL (e.g., from a QR code)
     query_params = st.query_params
-    if "password" in query_params and hmac.compare_digest(query_params["password"], st.secrets["password"]):
+    if "password" in query_params and hmac.compare_digest(query_params["password"], st.secrets.get("password", "")):
         st.session_state["password_correct"] = True
         return True
 
     def password_entered():
-        if hmac.compare_digest(st.session_state["password"], st.secrets["password"]):
+        if hmac.compare_digest(st.session_state["password"], st.secrets.get("password", "")):
             st.session_state["password_correct"] = True
             del st.session_state["password"]  # Clear password from session state
         else:
@@ -33,7 +33,7 @@ def check_password():
     if st.session_state.get("password_correct", False):
         return True
 
-    st.text_input("🔒 Enter Password to Access Dashboard", type="password", on_change=password_entered, key="password")
+    st.text_input("🔒 Enter Password to Access ❤️leep Dashboard", type="password", on_change=password_entered, key="password")
     if "password_correct" in st.session_state:
         st.error("😕 Password incorrect. Please try again.")
     return False
@@ -117,4 +117,289 @@ dmin, dmax = hh["interview_date"].min().date(), hh["interview_date"].max().date(
 dates = st.sidebar.date_input("Interview dates", (dmin, dmax), min_value=dmin, max_value=dmax)
 d0, d1 = (dates if isinstance(dates, tuple) and len(dates) == 2 else (dmin, dmax))
 titles = st.sidebar.multiselect("Role / title", sorted(hh["title"].dropna().unique()))
-areas = st.
+areas = st.sidebar.multiselect("Area (municipality)", sorted(hh["municipality_label"].dropna().unique()))
+brgys = st.sidebar.multiselect("Barangay", sorted(hh["barangay_label"].dropna().unique()))
+people = st.sidebar.multiselect("Enumerator / CF", sorted(hh["enumerator_label"].dropna().unique()))
+forms = st.sidebar.multiselect("Kobo form / project", sorted(hh["source_form"].dropna().unique())) if "source_form" in hh.columns else []
+
+m = hh["interview_date"].between(pd.Timestamp(d0), pd.Timestamp(d1))
+if titles: m &= hh["title"].isin(titles)
+if areas: m &= hh["municipality_label"].isin(areas)
+if brgys: m &= hh["barangay_label"].isin(brgys)
+if people: m &= hh["enumerator_label"].isin(people)
+if forms: m &= hh["source_form"].isin(forms)
+f_hh = hh[m]
+ids = set(f_hh["uuid"])
+f_int = integ[integ["uuid"].isin(ids)]
+f_flags = flags[flags["uuid"].isin(ids)]
+codes = set(f_hh["enumerator_code"])
+f_mon = mon[mon["enumerator_monitored"].isin(codes) | (not (titles or areas or brgys or people or forms))]
+f_mon = f_mon[f_mon["monitoring_date"].between(pd.Timestamp(d0), pd.Timestamp(d1)) | f_mon["monitoring_date"].isna()]
+f_enum = enum[enum["enumerator_code"].isin(codes) | (not (titles or areas or brgys or people or forms))]
+
+st.title("FDAF Survey Monitoring")
+st.caption(f"Source: {D['status']['source']}  |  refreshed {D['status']['refreshed_at']}  |  "
+           f"{len(f_hh):,} surveys in view")
+tab_over, tab_daily, tab_mon, tab_int, tab_audit, tab_conf, tab_status = st.tabs(
+    ["Overview", "Daily surveys", "Quality & compliance", "Data integrity", "Audit log (Tables 1 & 2)", "Enumerator confidence", "Data status"])
+
+# ---------------- overview ----------------
+with tab_over:
+    c = st.columns(6)
+    c[0].metric("Surveys", f"{len(f_hh):,}")
+    c[1].metric("Consent given", f"{int(f_hh['consented'].sum()):,}")
+    c[2].metric("Active enumerators/CFs", f_hh["enumerator_code"].nunique())
+    c[3].metric("Surveys on latest day", int((f_hh["interview_date"] == f_hh["interview_date"].max()).sum()))
+    c[4].metric("Avg monitoring score", "-" if f_mon.empty else f"{f_mon['overall_score'].mean():.1f}%")
+    c[5].metric("Surveys with no Critical/Major flag", f"{f_int['clean'].mean() * 100:.0f}%" if len(f_int) else "-")
+    st.subheader("Surveys per day")
+    per_day = f_hh.groupby(f_hh["interview_date"].dt.date).size().rename("surveys")
+    st.bar_chart(per_day)
+    lv = f_enum["confidence_level"].value_counts().reindex(["High", "Medium", "Low", "No data"]).fillna(0).astype(int)
+    st.subheader("Confidence levels")
+    cc = st.columns(4)
+    for col, name in zip(cc, lv.index):
+        col.metric(name, int(lv[name]))
+
+# ---------------- daily ----------------
+def add_total_row(df, label_cols):
+    """Append a TOTAL row to a table whose leading columns are labels and the rest are counts."""
+    tot = {c: "ALL" for c in label_cols}
+    tot[label_cols[0]] = "TOTAL"
+    for c in df.columns:
+        if c not in label_cols:
+            tot[c] = df[c].sum()
+    return pd.concat([df, pd.DataFrame([tot])[list(df.columns)]], ignore_index=True)
+
+
+with tab_daily:
+    st.subheader("Daily surveys conducted")
+    g_all = f_hh.copy()
+    g_all["day"] = g_all["interview_date"].dt.strftime("%Y-%m-%d")
+    g_all["consent_n"] = g_all["consented"].astype(int)
+    metric = st.radio("Count in the day-by-day tables", ["All surveys", "Consent given only"], horizontal=True)
+    g = g_all[g_all["consented"]] if metric.startswith("Consent") else g_all
+
+    # ---- overall total ----
+    n_days = g_all["day"].nunique()
+    k = st.columns(6)
+    k[0].metric("OVERALL TOTAL surveys", f"{len(g_all):,}")
+    k[1].metric("Consent given", f"{int(g_all['consent_n'].sum()):,}")
+    k[2].metric("Municipalities", g_all["municipality_label"].nunique())
+    k[3].metric("Barangays", g_all["barangay_label"].nunique())
+    k[4].metric("Enumerators / CFs", g_all["enumerator_code"].nunique())
+    k[5].metric("Avg surveys per field day", f"{len(g_all) / max(n_days, 1):.1f}")
+
+    if g.empty:
+        st.info("No surveys match the current selection.")
+    else:
+        # ---- 1. per enumerator per day, with row and column totals ----
+        st.markdown("#### Surveys per enumerator per day")
+        pe = g.pivot_table(index=["enumerator_label", "title"], columns="day", values="uuid", aggfunc="count", fill_value=0)
+        pe["Total"] = pe.sum(axis=1)
+        pe = add_total_row(pe.sort_values("Total", ascending=False).reset_index(), ["enumerator_label", "title"])
+        show_df(pe, hide_index=True)
+        download(pe, "surveys_per_enumerator_per_day")
+
+        # ---- 2. flexible breakdown ----
+        st.markdown("#### Day-by-day breakdown by another level")
+        dims = {"Role / title": "title", "Area (municipality)": "municipality_label", "Barangay": "barangay_label",
+                "Province": "province_label", "Region": "region_label", "Enumerator / CF": "enumerator_label"}
+        by = st.selectbox("Break down by", list(dims))
+        col = dims[by]
+        pv = g.pivot_table(index=col, columns="day", values="uuid", aggfunc="count", fill_value=0)
+        pv["Total"] = pv.sum(axis=1)
+        pv = add_total_row(pv.sort_values("Total", ascending=False).reset_index(), [col])
+        show_df(pv, hide_index=True)
+        download(pv, "daily_surveys_pivot")
+        st.bar_chart(pv[pv[col] != "TOTAL"].set_index(col).drop(columns="Total").T)
+
+    # ---- 3. totals per municipality, barangay, day (all surveys, with consent split) ----
+    def area_table(cols, with_barangays=False):
+        agg = {"Surveys": ("uuid", "count"), "Consent given": ("consent_n", "sum"),
+               "Enumerators": ("enumerator_code", "nunique"), "Field days": ("day", "nunique")}
+        if with_barangays:
+            agg["Barangays"] = ("barangay_label", "nunique")
+        t = g_all.groupby(cols).agg(**agg).reset_index().sort_values("Surveys", ascending=False)
+        t["Avg / field day"] = (t["Surveys"] / t["Field days"].clip(lower=1)).round(1)
+        t["% of all surveys"] = (t["Surveys"] / max(len(g_all), 1) * 100).round(1)
+        tot = {c: "ALL" for c in cols}
+        tot[cols[-1]] = "TOTAL"
+        tot.update({"Surveys": len(g_all), "Consent given": int(g_all["consent_n"].sum()),
+                    "Enumerators": g_all["enumerator_code"].nunique(), "Field days": n_days,
+                    "Avg / field day": round(len(g_all) / max(n_days, 1), 1), "% of all surveys": 100.0})
+        if with_barangays:
+            tot["Barangays"] = g_all["barangay_label"].nunique()
+        return pd.concat([t, pd.DataFrame([tot])[list(t.columns)]], ignore_index=True)
+
+    if not g_all.empty:
+        st.markdown("#### Total per municipality")
+        tm = area_table(["province_label", "municipality_label"], with_barangays=True)
+        show_df(tm, hide_index=True)
+        download(tm, "total_per_municipality")
+
+        st.markdown("#### Total per barangay")
+        tb = area_table(["municipality_label", "barangay_label"])
+        show_df(tb, hide_index=True)
+        download(tb, "total_per_barangay")
+
+        st.markdown("#### Total per day (all enumerators)")
+        td = g_all.groupby("day").agg(Surveys=("uuid", "count"), **{"Consent given": ("consent_n", "sum"),
+                                                                     "Enumerators active": ("enumerator_code", "nunique")}).reset_index()
+        td["Cumulative surveys"] = td["Surveys"].cumsum()
+        td_show = pd.concat([td, pd.DataFrame([{"day": "TOTAL", "Surveys": td["Surveys"].sum(), "Consent given": td["Consent given"].sum(),
+                                                 "Enumerators active": g_all["enumerator_code"].nunique(),
+                                                 "Cumulative surveys": td["Surveys"].sum()}])], ignore_index=True)
+        show_df(td_show.sort_values("day", ascending=False, key=lambda s: s.map(lambda v: "0000" if v == "TOTAL" else v)), hide_index=True)
+        download(td_show, "total_per_day")
+        st.bar_chart(td.set_index("day")["Surveys"])
+
+        st.markdown("#### Detail: enumerator x area x day")
+        det = g_all.groupby(["day", "enumerator_label", "title", "municipality_label", "barangay_label"]).size() \
+            .rename("surveys").reset_index().sort_values(["day", "enumerator_label"], ascending=[False, True])
+        show_df(det, hide_index=True)
+        download(det, "daily_surveys_detail")
+
+# ---------------- monitoring ----------------
+with tab_mon:
+    st.subheader("Quality & compliance monitoring scores")
+    if f_mon.empty:
+        st.info("No monitoring submissions in view yet.")
+    else:
+        c = st.columns(4)
+        c[0].metric("Monitoring visits", len(f_mon))
+        c[1].metric("Average overall score", f"{f_mon['overall_score'].mean():.1f}%")
+        c[2].metric("Critical failures (consent)", int(f_mon["critical_fail"].sum()))
+        c[3].metric("Consent declined (not scored)", int(f_mon["consent_declined"].sum()))
+        scored = f_mon[~f_mon["consent_declined"]]
+        sec_cols = [f"s{n}_score" for n in range(1, 10)]
+        tbl = scored.groupby(["enumerator_label", "enumerator_title"]).agg(
+            visits=("uuid", "count"), overall=("overall_score", "mean"), **{SECTION_NAMES[n]: (f"s{n}_score", "mean") for n in range(1, 10)}
+        ).reset_index().sort_values("overall")
+        st.markdown("**Score per enumerator and section** (green >= 90, yellow >= 75, red < 75)")
+        show_df(score_style(tbl, ["overall"] + [SECTION_NAMES[n] for n in range(1, 10)]), hide_index=True)
+        download(tbl, "monitoring_scores_by_enumerator")
+        st.markdown("**Trend of average score by monitoring date**")
+        st.line_chart(scored.groupby(scored["monitoring_date"].dt.date)["overall_score"].mean())
+        if not items.empty:
+            it = items[items["uuid"].isin(f_mon["uuid"])]
+            agg = it.groupby(["section", "item", "question"])["rating"].agg(
+                rated="count", no=lambda s: (s == "no").sum(), partly=lambda s: (s == "partly").sum()).reset_index()
+            agg["% not fully compliant"] = ((agg["no"] + agg["partly"]) / agg["rated"] * 100).round(1)
+            st.markdown("**Questions most often not asked completely and accurately**")
+            show_df(agg.sort_values("% not fully compliant", ascending=False).head(20), hide_index=True)
+        st.markdown("**All monitoring visits**")
+        vis = f_mon[["monitoring_date", "monitor_label", "monitor_title", "enumerator_label", "fdaf_family_id", "overall_score", "critical_fail"]]
+        show_df(vis.sort_values("monitoring_date", ascending=False), hide_index=True)
+
+    ml = D.get("mon_links")
+    if ml is not None and len(ml):
+        any_filter = bool(titles or areas or brgys or people or forms)
+        view = ml[ml["enumerator_label"].isin(set(f_hh["enumerator_label"])) | (not any_filter)]
+        view = view[view["monitoring_date"].between(pd.Timestamp(d0), pd.Timestamp(d1)) | view["monitoring_date"].isna()]
+        st.markdown("**Monitoring visits that do not match the FDAF data** (Family ID not found, wrong enumerator, or date differs)")
+        if len(view):
+            show_df(view.sort_values("monitoring_date", ascending=False), hide_index=True)
+            download(view, "monitoring_link_issues")
+        else:
+            st.caption("Every monitoring visit in view matches an FDAF survey.")
+
+# ---------------- integrity ----------------
+with tab_int:
+    st.subheader("Data integrity - answer consistency checks")
+    st.caption("Each rule compares answers that should agree (e.g. age vs grade, livelihood vs income). "
+               "Flags show the Family ID and member number only.")
+    c = st.columns(5)
+    c[0].metric("Surveys checked", len(f_int))
+    c[1].metric("Critical flags", int(f_int["Critical"].sum()))
+    c[2].metric("Major flags", int(f_int["Major"].sum()))
+    c[3].metric("Minor flags", int(f_int["Minor"].sum()))
+    c[4].metric("Avg integrity score", f"{f_int['integrity_score'].mean():.1f}" if len(f_int) else "-")
+    left, right = st.columns(2)
+    with left:
+        st.markdown("**Flags by rule**")
+        byrule = f_flags.groupby(["rule_id", "rule", "severity"]).size().rename("flags").reset_index().sort_values("flags", ascending=False)
+        show_df(style_cells(byrule, "severity", SEV_COLORS), hide_index=True)
+    with right:
+        st.markdown("**Flags by enumerator**")
+        byenum = f_int.groupby("enumerator_label").agg(surveys=("uuid", "count"), Critical=("Critical", "sum"), Major=("Major", "sum"),
+                                                      Minor=("Minor", "sum"), integrity_score=("integrity_score", "mean"),
+                                                      clean_rate=("clean", "mean")).reset_index()
+        byenum["clean_rate"] = (byenum["clean_rate"] * 100).round(0)
+        show_df(byenum.sort_values("integrity_score").round(1), hide_index=True)
+    pat = D.get("patterns")
+    st.markdown("**Enumerator pattern checks** - statistical signs of guessed or invented data. Review with the enumerator; "
+                "these are not counted in the survey scores.")
+    if pat is not None and len(pat):
+        show_df(pat[pat["enumerator_code"].isin(codes)].drop(columns=["enumerator_code"]), hide_index=True)
+    else:
+        st.caption("No enumerator pattern warnings.")
+    st.markdown("**Flag details**")
+    sev = st.multiselect("Severity", ["Critical", "Major", "Minor"], default=["Critical", "Major"])
+    cats = st.multiselect("Category", sorted(f_flags["category"].dropna().unique()))
+    fl = f_flags[f_flags["severity"].isin(sev)]
+    if cats:
+        fl = fl[fl["category"].isin(cats)]
+    show = fl[["interview_date", "hh_id", "enumerator_label", "municipality_label", "barangay_label", "rule_id", "severity",
+               "member_index", "detail"]].sort_values(["interview_date", "hh_id"], ascending=[False, True])
+    show_df(show, hide_index=True)
+    download(show, "integrity_flags")
+
+# ---------------- audit log ----------------
+with tab_audit:
+    st.subheader("Data quality audit")
+    from src.audit import audit_tables  # noqa: E402
+    A = audit_tables(f_flags, f_hh)
+    st.markdown("**Table 1 - Summary of data quality**")
+    show_df(A["t1"], hide_index=True)
+    c1, c2 = st.columns(2)
+    with c1:
+        st.markdown("Common error categories")
+        show_df(A["t1_category"], hide_index=True)
+    with c2:
+        st.markdown("Most common error types")
+        show_df(A["t1_rules"], hide_index=True)
+    if "t1_dimension" in A:
+        st.markdown("Data-quality dimensions (completeness, validity, consistency, relevance, plausibility, uniqueness, timeliness, integrity)")
+        show_df(A["t1_dimension"], hide_index=True)
+    st.markdown("**Table 2 - Flagged submissions log**")
+    sevs = st.multiselect("Severity (High = Critical, Medium = Major, Low = Minor)", ["High", "Medium", "Low"], default=["High", "Medium"], key="aud_sev")
+    cat_opts = sorted(A["t2"]["Error Category"].dropna().unique()) if len(A["t2"]) else []
+    cats2 = st.multiselect("Error category", cat_opts, key="aud_cat")
+    t2 = A["t2"]
+    t2 = t2[t2["Severity (High / Medium / Low)"].isin(sevs)]
+    if cats2:
+        t2 = t2[t2["Error Category"].isin(cats2)]
+    show_df(t2, hide_index=True)
+    download(t2, "audit_flagged_submissions_log")
+
+# ---------------- confidence ----------------
+with tab_conf:
+    st.subheader("Enumerator / CF confidence level")
+    w = cfg["confidence"]
+    st.caption(f"Confidence score = {w['weight_monitoring']:.0%} monitoring score + {w['weight_integrity']:.0%} data-integrity score. "
+               f"High >= {w['high_min']}, Medium >= {w['medium_min']}, otherwise Low. "
+               "A failed consent item caps the level at Low. Fewer than "
+               f"{cfg['monitoring']['min_monitored_surveys']} monitored surveys = provisional.")
+    cols = ["enumerator_label", "title", "home_area", "surveys", "monitored", "monitoring_score", "integrity_score", "clean_rate",
+            "critical_flags", "major_flags", "confidence_score", "confidence_level", "basis", "note"]
+    ct = f_enum[cols].copy()
+    show_df(style_cells(ct.round(1), "confidence_level", LEVEL_COLORS), hide_index=True)
+    download(ct, "enumerator_confidence")
+
+# ---------------- status ----------------
+with tab_status:
+    s = D["status"]
+    st.write(f"**Source:** {s['source']}")
+    st.write(f"**Last refreshed:** {s['refreshed_at']}  (the dashboard re-pulls from Kobo every {cfg.get('cache_minutes', 10)} minutes, "
+             "or when you press *Refresh now*)")
+    st.write(f"**FDAF submissions:** {s['fdaf_records']:,}  |  **Monitoring submissions:** {s['monitoring_records']:,}")
+    proj = s.get("projects")
+    if proj is not None and len(proj):
+        st.markdown("**Kobo projects connected**")
+        show_df(proj, hide_index=True)
+        if proj["status"].astype(str).str.startswith("ERROR").any():
+            st.warning("At least one project could not be loaded - see the status column. "
+                       "The others are still shown.")
+    st.markdown("**Accuracy rules in use**")
+    show_df(D["catalogue"], hide_index=True)
